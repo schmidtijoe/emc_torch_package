@@ -62,10 +62,11 @@ class SimulationConfig(sp.Serializable):
 
 @dataclass
 class SimulationData(sp.Serializable):
-    emc_signal: torch.tensor = torch.zeros(0)
+    emc_signal_mag: torch.tensor = torch.zeros(0)
+    emc_signal_phase: torch.tensor = torch.zeros(0)
     t1_s: torch.tensor = torch.tensor(1.5)
     t2_s: torch.tensor = torch.tensor(0.035)
-    b1: torch.tensor = torch.tensor(1.0)
+    b1: torch.tensor = torch.tensor(0.9)
     time: float = 0.0
 
     def set_run_params(
@@ -85,9 +86,10 @@ class SimulationData(sp.Serializable):
         return ret
 
     @classmethod
-    def set_signal_array_length(cls, etl: int):
+    def set_with_etl_length(cls, etl: int):
         sim_data_instance = cls()
-        sim_data_instance.emc_signal = torch.zeros(etl)
+        sim_data_instance.emc_signal_mag = torch.zeros(etl)
+        sim_data_instance.emc_signal_phase = torch.zeros(etl)
         return sim_data_instance
 
 
@@ -97,7 +99,7 @@ class SequenceConfiguration(sp.Serializable):
         Parameters related to Sequence simulation
         """
     # global parameter gamma [Hz/t]
-    gammaHz: float = 42577478.518
+    gamma_hz: float = 42577478.518
 
     # echo train length
     ETL: int = 16
@@ -135,7 +137,7 @@ class SequenceConfiguration(sp.Serializable):
     # time for acquisition (of one pixel) * 1e6 <- [(px)s] * 1e6
 
     def __post_init__(self):
-        self.gamma_pi: float = self.gammaHz * 2 * torch.pi
+        self.gamma_pi: float = self.gamma_hz * 2 * torch.pi
         self.duration_acquisition: float = 1e6 / self.bw  # [us]
         if self.refocus_phase.__len__() != self.refocus_angle.__len__():
             err = f"provide same amount of refocusing pulse angle ({self.refocus_angle.__len__()}) " \
@@ -167,7 +169,6 @@ class SimulationSettings(sp.Serializable):
     t1_list: typing.List = sp.field(default_factory=lambda: [1.5])  # T1 to simulate [s]
     t2_list: typing.List = sp.field(default_factory=lambda: [[25, 30, 0.5], [30, 35, 1]])  # T2 to simulate [ms]
     b1_list: typing.List = sp.field(default_factory=lambda: [0.6, 1.0])  # B1 to simulate
-    d_list: typing.List = sp.field(default_factory=lambda: [700.0])
     # diffusion values to use if flag in config is set [mm²/s]
     total_num_sim: int = 4
 
@@ -188,11 +189,11 @@ class SimulationSettings(sp.Serializable):
             logModule.error('T2 value range exceeded, make sure to post T2 in ms')
             exit(-1)
         else:
-            self.total_num_sim = len(self.t1_list) * len(self.t2_array) * len(self.b1_list) * len(self.d_list)
+            self.total_num_sim = len(self.t1_list) * len(self.t2_array) * len(self.b1_list)
 
     def get_complete_param_list(self):
-        return [(t1, t2, b1, d) for t1 in self.t1_list
-                for t2 in self.t2_array for b1 in self.b1_list for d in self.d_list]
+        return [(t1, t2, b1) for t1 in self.t1_list
+                for t2 in self.t2_array for b1 in self.b1_list]
 
 
 @dataclass
@@ -203,7 +204,7 @@ class SimulationParameters(sp.Serializable):
 
     def __post_init__(self):
         self.sequence.gradient_acquisition = - self.settings.acquisition_number * self.sequence.bw \
-                                             / (self.sequence.gammaHz * 2 * self.settings.length_z) * 1000
+                                             / (self.sequence.gamma_hz * 2 * self.settings.length_z) * 1000
 
     def set_acquisition_gradient(self):
         self.__post_init__()
@@ -281,7 +282,7 @@ class SimulationParameters(sp.Serializable):
         save_fn.get(db_path.suffix)(db_path.__str__())
         # save used config
         logModule.info(f"writing file {config_path}")
-        self.save(config_path, indent=2, separators=(',', ':'))
+        self.save_json(config_path, indent=2, separators=(',', ':'))
 
 
 @dataclass
@@ -292,20 +293,21 @@ class SimTempData:
     sample: torch.tensor
     sample_axis: torch.tensor
     signal_tensor: torch.tensor
-    magnetizationPropagation: torch.tensor
+    magnetization_propagation: torch.tensor
     excitation_flag: bool = True  # flag to toggle between excitation and refocus
     run: SimulationData = SimulationData()
 
-    def __init__(self, simParams: SimulationParameters):
-        self.sample_axis = torch.linspace(-simParams.settings.length_z, simParams.settings.length_z,
-                                          simParams.settings.sample_number)
-        sample = torch.from_numpy(stats.gennorm(24).pdf(self.sample_axis / simParams.settings.length_z * 1.1) + 1e-6)
+    def __init__(self, sim_params: SimulationParameters):
+        self.sample_axis = torch.linspace(-sim_params.settings.length_z, sim_params.settings.length_z,
+                                          sim_params.settings.sample_number)
+        sample = torch.from_numpy(stats.gennorm(24).pdf(self.sample_axis / sim_params.settings.length_z * 1.1) + 1e-6)
         self.sample = torch.divide(sample, torch.max(sample))
-        mInit = torch.zeros((simParams.settings.sample_number, 4))
+        mInit = torch.zeros((sim_params.settings.sample_number, 4))
         mInit[:, 2] = self.sample
         mInit[:, 3] = self.sample
-        self.signal_tensor = torch.zeros((simParams.sequence.ETL, simParams.settings.acquisition_number), dtype=complex)
-        self.magnetizationPropagation = mInit
+        self.signal_tensor = torch.zeros((sim_params.sequence.ETL, sim_params.settings.acquisition_number),
+                                         dtype=torch.complex128)
+        self.magnetization_propagation = mInit
 
 
 def createCommandlineParser():
@@ -322,3 +324,8 @@ def createCommandlineParser():
 
     return parser, args
 
+
+if __name__ == '__main__':
+    params = SimulationParameters()
+    path = plib.Path("tests/default.json").absolute()
+    params.save_json(path.as_posix(), indent=2, separators=(',', ':'))

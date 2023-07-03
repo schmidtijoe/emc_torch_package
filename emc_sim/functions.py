@@ -1,27 +1,52 @@
 import torch
-import numpy as np
 import plotly.graph_objects as go
 import plotly.subplots as psub
 from plotly.express.colors import sample_colorscale
 import plotly
 from scipy import stats
-import tqdm
+import numpy as np
+from emc_sim import options
 
 gamma = 42577478.518
 
 
-def propagte_grad_pulse(mag_tensor: torch.tensor, grad_t: torch.tensor, pulse_t: torch.tensor, dt_s: float,
+def pulseCalibrationIntegral(pulse: torch.tensor,
+                             deltaT: float,
+                             simParams: options.SimulationParameters,
+                             simTempData: options.SimTempData,
+                             pulseNumber: int = 0) -> torch.tensor:
+    """
+    Calibrates pulse waveform for given flip angle, adds phase if given
+    """
+    # normalize
+    b1Pulse = pulse / torch.norm(pulse)
+    # integrate (discrete steps) total flip angle achieved with the normalized pulse
+    flipAngleNormalizedB1 = torch.sum(torch.abs(b1Pulse) * simParams.sequence.gamma_pi) * deltaT * 1e-6
+    if simTempData.excitation_flag:
+        angleFlip = simParams.sequence.excitation_angle
+        phase = simParams.sequence.excitation_phase / 180.0 * torch.pi
+    else:
+        # excitation pulse always 0th pulse
+        angleFlip = simParams.sequence.refocus_angle[pulseNumber-1]
+        phase = simParams.sequence.refocus_phase[pulseNumber-1] / 180.0 * torch.pi
+    angleFlip *= torch.pi / 180 * simTempData.run.b1  # calculate with applied actual flip angle offset
+    b1PulseCalibrated = b1Pulse * (angleFlip / flipAngleNormalizedB1) * torch.exp(torch.tensor(1j * phase))
+    return b1PulseCalibrated
+
+
+def propagte_grad_pulse(mag_tensor: torch.tensor, grad_t: torch.tensor, pulse_t: torch.tensor, dt_us: float,
                         sample_axis: torch.tensor, t1_s: float, t2_s: float) -> torch.tensor:
-    for idx_t in tqdm.trange(grad_t.shape[0]):
+    dt_s = dt_us * 1e-6
+    for idx_t in range(grad_t.shape[0]):
         mag_tensor = matrix_propagation_grad_pulse(mag_tensor, grad_t=grad_t[idx_t], pulse_t=pulse_t[idx_t], dt_s=dt_s,
                                                    sample_axis=sample_axis, t1_s=t1_s, t2_s=t2_s)
     return mag_tensor
 
 
-def matrix_propagation_relaxation(mag_tensor: torch.tensor, dt_s: float, t1_s: float, t2_s: float) -> torch.tensor:
-    t_dt = torch.tensor(dt_s)
-    e1 = torch.exp(-t_dt / torch.tensor(t1_s))
-    e2 = torch.exp(-t_dt / torch.tensor(t2_s))
+def matrix_propagation_relaxation(mag_tensor: torch.tensor, dt_us: float, t1_s: float, t2_s: float) -> torch.tensor:
+    t_dt = dt_us*1e-6
+    e1 = np.exp(-t_dt / t1_s)
+    e2 = np.exp(-t_dt / t2_s)
 
     relax_matrix = torch.tensor([
         [e2, 0, 0, 0], [0, e2, 0, 0], [0, 0, e1, 1 - e1], [0, 0, 0, 1]
@@ -37,7 +62,7 @@ def matrix_propagation_grad_pulse(mag_tensor: torch.tensor, grad_t: float, pulse
 
     rot_axis_vector[:, 0] = pulse_t.real
     rot_axis_vector[:, 1] = pulse_t.imag
-    rot_axis_vector[:, 2] = torch.tensor(grad_t) * sample_axis * 1e-3  # grad in mT/m
+    rot_axis_vector[:, 2] = grad_t * sample_axis * 1e-3  # grad in mT/m
     # norm
     rot_angle = torch.norm(rot_axis_vector, dim=-1)
     rot_axis_vector = torch.divide(rot_axis_vector, rot_angle[:, None])
@@ -52,7 +77,7 @@ def matrix_propagation_grad_pulse(mag_tensor: torch.tensor, grad_t: float, pulse
     u_cross_x = torch.cross(rot_axis_vector, x)
     rot_propped = A + co * torch.cross(u_cross_x, rot_axis_vector) + si * u_cross_x
     mag_tensor[:, :3] = rot_propped
-    return matrix_propagation_relaxation(mag_tensor, dt_s=dt_s, t1_s=t1_s, t2_s=t2_s)
+    return matrix_propagation_relaxation(mag_tensor, dt_us=1e6 * dt_s, t1_s=t1_s, t2_s=t2_s)
 
 
 def generate_sample(axis: torch.tensor, extent: float):
