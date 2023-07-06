@@ -1,9 +1,10 @@
 """ define available sequence simulations"""
-from emc_sim import options, prep, functions, plotting
+from emc_sim import options, prep, functions, plotting, pulse_optimization
 import time
 import logging
 import torch
 import tqdm
+import numpy as np
 
 logModule = logging.getLogger(__name__)
 
@@ -24,7 +25,7 @@ def mese(sim_params: options.SimulationParameters, sim_data: options.SimulationD
         sim_params=sim_params, sim_tmp_data=tmp_data
     )
 
-    fig = plotting.plot_running_mag(fig, tmp_data, rows=9, cols=1, id=plot_idx)
+    fig = plotting.plot_running_mag(fig, tmp_data, id=plot_idx)
     plot_idx += 1
 
     # --- starting sim matrix propagation --- #
@@ -36,7 +37,7 @@ def mese(sim_params: options.SimulationParameters, sim_data: options.SimulationD
         t1_s=tmp_data.run.t1_s, t2_s=tmp_data.run.t2_s
     )
 
-    fig = plotting.plot_running_mag(fig, tmp_data, rows=9, cols=1, id=plot_idx)
+    fig = plotting.plot_running_mag(fig, tmp_data, id=plot_idx)
     plot_idx += 1
     for loop_idx in tqdm.trange(sim_params.sequence.ETL):
         # ----- refocusing loop - echo train -----
@@ -59,7 +60,7 @@ def mese(sim_params: options.SimulationParameters, sim_data: options.SimulationD
         )
 
         # if simParams.config.debuggingFlag and simParams.config.visualize:
-        fig = plotting.plot_running_mag(fig, tmp_data, rows=9, cols=1, id=plot_idx)
+        fig = plotting.plot_running_mag(fig, tmp_data, id=plot_idx)
         plot_idx += 1
 
         # delay after pulse
@@ -98,4 +99,47 @@ def mese(sim_params: options.SimulationParameters, sim_data: options.SimulationD
     plotting.display_running_plot(fig)
 
     return sim_data, sim_params
+
+
+def single_pulse(sim_params: options.SimulationParameters, sim_data: options.SimulationData):
+    """assume T2 > against pulse width"""
+    # set tensor of k value-tuples to simulate for, here only b1
+    n_b1 = 5
+    b1_vals = torch.linspace(0.5, 1.4, n_b1)
+    n_t2 = 2
+    t2_vals = torch.linspace(0.035, 0.05, n_t2)
+
+    sim_params.settings.sample_number = 500
+    sim_params.settings.length_z = 0.005
+
+    tmp_data = options.SimTempData(sim_params=sim_params)
+    tmp_data.run = sim_data
+    initial_magnetization = tmp_data.magnetization_propagation
+
+    gp_single = prep.GradPulse.prep_single_grad_pulse(
+        params=sim_params, sim_temp_data=tmp_data, grad_rephase_factor=0.0)
+    #
+    # plot_idx = 0
+    # fig = plotting.prep_plot_running_mag(2, 1)
+    # # excite only
+    # fig = plotting.plot_running_mag(fig, tmp_data, id=plot_idx)
+    # plot_idx += 1
+    #
+    # # --- starting sim matrix propagation --- #
+    # logModule.debug("excitation")
+    # matrix_propagation = functions.matrix_effect_grad_pulse_multi_dim(
+    #     t2_tensor=t2_vals, b1_tensor=b1_vals,
+    #     grad=gp_single.data_grad, pulse_x=gp_single.data_pulse.real.to(dtype=torch.float32),
+    #     pulse_y=gp_single.data_pulse.imag.to(torch.float32),
+    #     dt_us=gp_single.dt_sampling_steps, sample_axis=tmp_data.sample_axis,
+    #     t1_s=tmp_data.run.t1_s)
+    #
+    # tmp_magnetization_propagation = torch.einsum('ijklm, kl -> ijkm', matrix_propagation,
+    #                                              initial_magnetization)
+    # tmp_data.magnetization_propagation = tmp_magnetization_propagation[0, 2]
+    # fig = plotting.plot_running_mag(fig, tmp_data, id=plot_idx)
+    # plot_idx += 1
+    # plotting.display_running_plot(fig)
+
+    pulse_optimization.optimize(sim_params=sim_params, grad_pulse=gp_single)
 

@@ -151,14 +151,19 @@ class GradPulse:
     @staticmethod
     def build_pulse_grad_shapes(
             gp_details: GPDetails, pulse: torch.tensor, duration_pre: float, grad_amp_pre: float):
-        duration_pre = torch.tensor(duration_pre)
         grad_amp_pre = torch.tensor(grad_amp_pre)
+        if torch.abs(grad_amp_pre) < 1e-5:
+            duration_pre = torch.zeros(1)
+        else:
+            duration_pre = torch.tensor(duration_pre)
         num_sample_pulse = pulse.shape[0]
         dt_s = gp_details.duration_pulse * 1e-6 / num_sample_pulse
         # calculate total number of sampling points
         num_sample_pre = torch.nan_to_num(torch.div(
             duration_pre, torch.abs(grad_amp_pre), rounding_mode="trunc"
         )).type(torch.int)
+        if torch.abs(gp_details.grad_crush_rephase) < 1e-5:
+            gp_details.duration_crush_rephase = 0.0
         num_sample_crush = torch.nan_to_num(torch.div(
             gp_details.duration_crush_rephase, torch.abs(gp_details.grad_crush_rephase), rounding_mode="trunc"
         )).type(torch.int)
@@ -219,12 +224,12 @@ class GradPulse:
         # However, the rephasing gradient is usually used with half the gradient moment area (at 90° pulses), which
         # is not quite accurate.
         # After investigation a manual correction term can be put in here for accuracy * 1.038
-        gradient_excitation_phase_rewind = - area_grad / (
-                grad_rephase_factor * 2 * params.sequence.duration_excitation_rephase)
+        gradient_excitation_phase_rewind = - torch.nan_to_num(area_grad / (
+                grad_rephase_factor * 2 * params.sequence.duration_excitation_rephase), posinf=0.0)
 
         # The gradient pulse scheme needs to be re-done with accommodating those changes in the rephase gradient of
         # the excitation
-        gp_details.grad_crush_rephase = torch.tensor(gradient_excitation_phase_rewind)
+        gp_details.grad_crush_rephase = gradient_excitation_phase_rewind.clone().detach()
         grad, pulse, duration, area_grad = cls.build_pulse_grad_shapes(
             gp_details=gp_details,
             pulse=pulse_from_rfpf,

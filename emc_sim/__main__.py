@@ -17,8 +17,9 @@ def main():
     sim_data = options.SimulationData.set_with_etl_length(sim_params.sequence.ETL)
 
     try:
-        sim_data, sim_params = simulations.mese(sim_params=sim_params, sim_data=sim_data)
-        plotting.plot_emc_sim_data(sim_data)
+        # sim_data, sim_params = simulations.mese(sim_params=sim_params, sim_data=sim_data)
+        # plotting.plot_emc_sim_data(sim_data)
+        simulations.single_pulse(sim_params=sim_params, sim_data=sim_data)
     except Exception as e:
         print(e)
         parser.print_usage()
