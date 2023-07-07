@@ -1,4 +1,4 @@
-from emc_sim import options, simulations, plotting
+from emc_sim import options, pulse_optimization
 import logging
 
 
@@ -14,12 +14,11 @@ def main():
 
     logging.basicConfig(format='%(asctime)s %(levelname)s :: %(name)s --  %(message)s',
                         datefmt='%I:%M:%S', level=level)
-    sim_data = options.SimulationData.set_with_etl_length(sim_params.sequence.ETL)
 
     try:
         # sim_data, sim_params = simulations.mese(sim_params=sim_params, sim_data=sim_data)
         # plotting.plot_emc_sim_data(sim_data)
-        simulations.single_pulse(sim_params=sim_params, sim_data=sim_data)
+        pulse_optimization.optimize(sim_params=sim_params)
     except Exception as e:
         print(e)
         parser.print_usage()

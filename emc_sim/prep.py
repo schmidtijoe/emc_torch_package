@@ -45,7 +45,8 @@ class GradPulse:
         self.num_sampling_points = num_sampling_points
         self.dt_sampling_steps = dt_sampling_steps
         self.data_grad = torch.zeros(0)
-        self.data_pulse = torch.zeros(0, dtype=torch.complex128)
+        self.data_pulse_x = torch.zeros(0)
+        self.data_pulse_y = torch.zeros(0)
         self.excitation_flag: bool = True
         # self.params = params
         # if sim_temp_data is not None:
@@ -58,6 +59,11 @@ class GradPulse:
         # set and check
         self._set_exci_flag()
 
+    def set_device(self, device: torch.device):
+        self.data_pulse_x.to(device)
+        self.data_pulse_y.to(device)
+        self.data_grad.to(device)
+
     def _set_exci_flag(self):
         if self.pulse_type == 'Excitation':
             self.excitation_flag = True
@@ -66,22 +72,21 @@ class GradPulse:
 
     @classmethod
     def prep_grad_pulse(cls, pulse_type: str = 'Excitation', pulse_number: int = 0, sym_spoil: bool = True,
-                        params: options.SimulationParameters = options.SimulationParameters(),
-                        sim_temp_data: options.SimTempData = None):
+                        params: options.SimulationParameters = options.SimulationParameters()):
         # -- prep pulse
         logModule.debug(f'prep pulse {pulse_type}; # {pulse_number}')
         grad_pulse = cls(pulse_type=pulse_type, pulse_number=pulse_number)
         # set flag
-        sim_temp_data.excitation_flag = grad_pulse.excitation_flag
+        excitation_flag: bool = (pulse_number == 0 & pulse_type == 'Excitation')
         # get duration & grad pulse detauls
-        gp_details = GPDetails.get_gp_details(params=params, excitation_flag=grad_pulse.excitation_flag)
+        gp_details = GPDetails.get_gp_details(params=params, excitation_flag=excitation_flag)
         # read rfpf
         rf = rfpf.RF.load(gp_details.rfpf_path)
 
         if abs(rf.duration_in_us - gp_details.duration_pulse) > 1e-5:
             # resample pulse
             rf.resample_to_duration(duration_in_us=int(gp_details.duration_pulse))
-        pulse = torch.from_numpy(rf.amplitude) * torch.exp(1j*torch.from_numpy(rf.phase))
+        pulse = torch.from_numpy(rf.amplitude) * torch.exp(torch.from_numpy(1j*rf.phase))
 
         # calculate and normalize
         pulse_from_rfpf = functions.pulseCalibrationIntegral(
@@ -89,7 +94,7 @@ class GradPulse:
             deltaT=rf.get_dt_sampling_in_us(),
             pulseNumber=pulse_number,
             simParams=params,
-            simTempData=sim_temp_data)
+            excitation=excitation_flag)
 
         if sym_spoil:
             grad_prewind = gp_details.grad_crush_rephase
@@ -143,7 +148,8 @@ class GradPulse:
         grad_pulse.num_sampling_points = rf.num_samples
         grad_pulse.dt_sampling_steps = rf.get_dt_sampling_in_us()
         grad_pulse.data_grad = grad
-        grad_pulse.data_pulse = pulse
+        grad_pulse.data_pulse_x = pulse.real
+        grad_pulse.data_pulse_y = pulse.imag
         grad_pulse.duration = rf.duration_in_us
 
         return grad_pulse
@@ -152,11 +158,14 @@ class GradPulse:
     def build_pulse_grad_shapes(
             gp_details: GPDetails, pulse: torch.tensor, duration_pre: float, grad_amp_pre: float):
         grad_amp_pre = torch.tensor(grad_amp_pre)
+        """ want to build the shapes given slice gradient pre, spoil and slice select and align it to the given pulse"""
+        # grad amplitudes are values, pulse is a shape already with complex numbers and
+        # distributed across different b1 values -> pulse dim [# b1, # pulse sampling steps]
         if torch.abs(grad_amp_pre) < 1e-5:
             duration_pre = torch.zeros(1)
         else:
             duration_pre = torch.tensor(duration_pre)
-        num_sample_pulse = pulse.shape[0]
+        num_sample_pulse = pulse.shape[1]
         dt_s = gp_details.duration_pulse * 1e-6 / num_sample_pulse
         # calculate total number of sampling points
         num_sample_pre = torch.nan_to_num(torch.div(
@@ -170,27 +179,26 @@ class GradPulse:
         num_sample_total = num_sample_pre + num_sample_pulse + num_sample_crush
         # allocate tensors
         grad_amp = torch.zeros(num_sample_total)
-        pulse_amp = torch.zeros(num_sample_total, dtype=torch.complex128)
+        pulse_amp = torch.zeros((pulse.shape[0], num_sample_total), dtype=torch.complex128)
         # fill
         grad_amp[:num_sample_pre] = grad_amp_pre
         grad_amp[num_sample_pre:num_sample_pre + num_sample_pulse] = gp_details.grad_amp
         grad_amp[num_sample_pre + num_sample_pulse:] = gp_details.grad_crush_rephase
-        pulse_amp[num_sample_pre:num_sample_pre + num_sample_pulse] = pulse
+        pulse_amp[:, num_sample_pre:num_sample_pre + num_sample_pulse] = pulse
         t_total = num_sample_total * dt_s
         return grad_amp, pulse_amp, t_total, torch.sum(grad_amp[num_sample_pre:num_sample_pre+num_sample_pulse]) * dt_s
 
     @classmethod
     def prep_single_grad_pulse(cls, params: options.SimulationParameters = options.SimulationParameters(),
-                               sim_temp_data: options.SimTempData = None,
+                               excitation_flag: bool=True,
                                grad_rephase_factor: float = 1.0):
         # -- prep pulse
         pulse_type: str = 'Excitation'  # just set it
         logModule.debug(f'prep pulse {pulse_type}; # {0}')
         grad_pulse = cls(pulse_type=pulse_type, pulse_number=0)
         # read file
-        sim_temp_data.excitation_flag = True
-        # get duration & grad pulse detauls
-        gp_details = GPDetails.get_gp_details(params=params, excitation_flag=grad_pulse.excitation_flag)
+        # get duration & grad pulse defaults
+        gp_details = GPDetails.get_gp_details(params=params, excitation_flag=excitation_flag)
         gp_details.grad_crush_rephase = torch.zeros(1)
 
         path = plib.Path(params.config.path_to_rfpf).absolute().joinpath(params.config.rfpf_excitation)
@@ -209,7 +217,7 @@ class GradPulse:
             deltaT=rf.get_dt_sampling_in_us(),
             pulseNumber=0,
             simParams=params,
-            simTempData=sim_temp_data)
+            excitation=True)
 
         # build verse pulse gradient
         grad, pulse, duration, area_grad = cls.build_pulse_grad_shapes(
@@ -241,7 +249,8 @@ class GradPulse:
         grad_pulse.num_sampling_points = rf.num_samples
         grad_pulse.dt_sampling_steps = rf.get_dt_sampling_in_us()
         grad_pulse.data_grad = grad
-        grad_pulse.data_pulse = pulse
+        grad_pulse.data_pulse_x = pulse.real
+        grad_pulse.data_pulse_y = pulse.imag
         grad_pulse.duration = rf.duration_in_us
 
         return grad_pulse
@@ -257,7 +266,8 @@ class GradPulse:
             params.sequence.gradient_acquisition,
             params.sequence.gradient_acquisition,
             1)
-        grad_pulse.data_pulse = torch.linspace(0, 0, 1, dtype=torch.complex128)
+        grad_pulse.data_pulse_x = torch.linspace(0, 0, 1)
+        grad_pulse.data_pulse_y = torch.linspace(0, 0, 1)
         grad_pulse.duration = params.sequence.duration_acquisition
         return grad_pulse
 
@@ -321,22 +331,20 @@ class Timing:
 
 
 def prep_gradient_pulse_mese(
-        sim_params: options.SimulationParameters,
-        sim_tmp_data: options.SimTempData) -> (GradPulse, list, Timing, GradPulse):
+        sim_params: options.SimulationParameters) -> (GradPulse, list, Timing, GradPulse):
     logModule.debug('pulse preparation')
     gp_excitation = GradPulse.prep_grad_pulse(
         pulse_type='Excitation',
         pulse_number=0,
         sym_spoil=False,
-        params=sim_params,
-        sim_temp_data=sim_tmp_data)
+        params=sim_params
+    )
 
     gp_refocus_1 = GradPulse.prep_grad_pulse(
         pulse_type='Refocusing_1',
         pulse_number=1,
         sym_spoil=False,
-        params=sim_params,
-        sim_temp_data=sim_tmp_data
+        params=sim_params
     )
     # built list of grad_pulse events, acquisition and timing
     grad_pulses = [gp_refocus_1]
@@ -345,8 +353,7 @@ def prep_gradient_pulse_mese(
             pulse_type='Refocusing',
             pulse_number=r_idx,
             sym_spoil=True,
-            params=sim_params,
-            sim_temp_data=sim_tmp_data
+            params=sim_params
         )
         grad_pulses.append(gp_refocus)
 

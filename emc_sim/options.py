@@ -61,39 +61,6 @@ class SimulationConfig(sp.Serializable):
 
 
 @dataclass
-class SimulationData(sp.Serializable):
-    emc_signal_mag: torch.tensor = torch.zeros(0)
-    emc_signal_phase: torch.tensor = torch.zeros(0)
-    t1_s: torch.tensor = torch.tensor(1.5)
-    t2_s: torch.tensor = torch.tensor(0.035)
-    b1: torch.tensor = torch.tensor(0.9)
-    time: float = 0.0
-
-    def set_run_params(
-            self, t1_s: typing.Union[float, torch.tensor],
-            t2_s: typing.Union[float, torch.tensor],
-            b1: typing.Union[float, torch.tensor]):
-        self.t1_s = torch.as_tensor(t1_s)
-        self.t2_s = torch.as_tensor(t2_s)
-        self.b1 = torch.as_tensor(b1)
-
-    def get_run_params(self):
-        ret = {
-            "T1": self.t1_s,
-            "T2": self.t2_s,
-            "B1": self.b1
-        }
-        return ret
-
-    @classmethod
-    def set_with_etl_length(cls, etl: int):
-        sim_data_instance = cls()
-        sim_data_instance.emc_signal_mag = torch.zeros(etl)
-        sim_data_instance.emc_signal_phase = torch.zeros(etl)
-        return sim_data_instance
-
-
-@dataclass
 class SequenceConfiguration(sp.Serializable):
     """
         Parameters related to Sequence simulation
@@ -172,28 +139,9 @@ class SimulationSettings(sp.Serializable):
     # diffusion values to use if flag in config is set [mm²/s]
     total_num_sim: int = 4
 
-    def __post_init__(self):
-        array = torch.empty(0)
-        for item in self.t2_list:
-            if type(item) == str:
-                item = [float(i) for i in item[1:-1].split(',')]
-            array = torch.concatenate((array, torch.arange(*item)))
-
-        array = [t2 / 1000.0 for t2 in array]  # cast to [s]
-        self.t2_array = array
-        # sanity checks
-        if max(self.t2_array) > min(self.t1_list):
-            logModule.error('T1 T2 mismatch (T2 > T1)')
-            exit(-1)
-        if max(self.t2_array) < 1e-4:
-            logModule.error('T2 value range exceeded, make sure to post T2 in ms')
-            exit(-1)
-        else:
-            self.total_num_sim = len(self.t1_list) * len(self.t2_array) * len(self.b1_list)
-
     def get_complete_param_list(self):
         return [(t1, t2, b1) for t1 in self.t1_list
-                for t2 in self.t2_array for b1 in self.b1_list]
+                for t2 in self.t2_list for b1 in self.b1_list]
 
 
 @dataclass
@@ -250,6 +198,8 @@ class SimulationParameters(sp.Serializable):
         def_settings = SimulationSettings()
         non_default_settings = {}
         for key, value in vars(self.settings).items():
+            if torch.is_tensor(value):
+                continue
             if self.settings.__getattribute__(key) != def_settings.__getattribute__(key):
                 non_default_settings.__setitem__(key, value)
 
@@ -286,28 +236,91 @@ class SimulationParameters(sp.Serializable):
 
 
 @dataclass
-class SimTempData:
-    """
-        Carrying data through simulation
-        """
-    sample: torch.tensor
+class SimulationData:
+    """ carrying data through simulation """
+    t1_vals: torch.tensor
+    t2_vals: torch.tensor
+    b1_vals: torch.tensor
+
+    emc_signal_mag: torch.tensor
+    emc_signal_phase: torch.tensor
+
     sample_axis: torch.tensor
     signal_tensor: torch.tensor
     magnetization_propagation: torch.tensor
-    excitation_flag: bool = True  # flag to toggle between excitation and refocus
-    run: SimulationData = SimulationData()
 
-    def __init__(self, sim_params: SimulationParameters):
-        self.sample_axis = torch.linspace(-sim_params.settings.length_z, sim_params.settings.length_z,
-                                          sim_params.settings.sample_number)
-        sample = torch.from_numpy(stats.gennorm(24).pdf(self.sample_axis / sim_params.settings.length_z * 1.1) + 1e-6)
-        self.sample = torch.divide(sample, torch.max(sample))
-        mInit = torch.zeros((sim_params.settings.sample_number, 4))
-        mInit[:, 2] = self.sample
-        mInit[:, 3] = self.sample
-        self.signal_tensor = torch.zeros((sim_params.sequence.ETL, sim_params.settings.acquisition_number),
-                                         dtype=torch.complex128)
-        self.magnetization_propagation = mInit
+    gamma: torch.tensor
+
+    device: torch.device
+
+    @classmethod
+    def from_sim_parameters(cls, sim_params: SimulationParameters, device: torch.device):
+        # set values
+        t1_vals = torch.tensor(sim_params.settings.t1_list, device=device)
+        b1_vals = torch.tensor(sim_params.settings.b1_list, device=device)
+        # t2
+        array = []
+        for item in sim_params.settings.t2_list:
+            if type(item) == str:
+                item = [float(i) for i in item[1:-1].split(',')]
+            if type(item) == int:
+                item = float(item)
+            if type(item) == float:
+                array.append(item)
+            else:
+                array.extend(torch.arange(*item).tolist())
+        array = torch.tensor(array)
+        array /= 1000.0  # cast to s
+        t2_vals = array.to(device)
+
+        sample_axis = torch.linspace(-sim_params.settings.length_z, sim_params.settings.length_z,
+                                     sim_params.settings.sample_number)
+        sample = torch.from_numpy(
+            stats.gennorm(24).pdf(sample_axis / sim_params.settings.length_z * 1.1) + 1e-6
+        )
+        sample = torch.divide(sample, torch.max(sample))
+
+        sample_axis = sample_axis.to(device)
+
+        m_init = torch.zeros((sim_params.settings.sample_number, 4))
+        m_init[:, 2] = sample
+        m_init[:, 3] = sample
+        m_init = m_init[None, None, None].to(device)
+        # signal tensor is supposed to hold all acquisition points for all reads
+        signal_tensor = torch.zeros((
+            t1_vals.shape[0], t2_vals.shape[0], b1_vals.shape[0],
+            sim_params.sequence.ETL, sim_params.settings.acquisition_number),
+            dtype=torch.complex128, device=device)
+
+        # allocate
+        # set emc data tensor -> dims: [t1s, t2s, b1s, ETL]
+        # (we get this in the end by calculation, no need to allocate for it and carry it through)
+        emc_signal_mag = torch.zeros(0, device=device)
+        emc_signal_phase = torch.zeros(0, device=device)
+        instance = cls(
+            t1_vals=t1_vals, t2_vals=t2_vals, b1_vals=b1_vals,
+            emc_signal_mag=emc_signal_mag, emc_signal_phase=emc_signal_phase,
+            sample_axis=sample_axis, signal_tensor=signal_tensor, magnetization_propagation=m_init,
+            gamma=torch.tensor(sim_params.sequence.gamma_hz, device=device), device=device
+        )
+        instance._check_args()
+        return instance
+
+    def _check_args(self):
+        # sanity checks
+        if torch.max(self.t2_vals) > torch.min(self.t1_vals):
+            err = 'T1 T2 mismatch (T2 > T1)'
+            logModule.error(err)
+            raise AttributeError(err)
+        if torch.max(self.t2_vals) < 1e-4:
+            err = 'T2 value range exceeded, make sure to post T2 in ms'
+            logModule.error(err)
+            raise AttributeError(err)
+
+    def set_device(self, device: torch.device):
+        for _, value in vars(self).items():
+            if torch.is_tensor(value):
+                value.to(device)
 
 
 def createCommandlineParser():

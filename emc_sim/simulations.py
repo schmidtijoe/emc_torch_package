@@ -1,93 +1,135 @@
-""" define available sequence simulations"""
-from emc_sim import options, prep, functions, plotting, pulse_optimization
+"""
+define available sequence simulations
+
+The simulations are setup to calculate the whole matrix propagation matrix for each entity:
+e.g.: exciation pulse - relaxation time - refocus 1 - relaxation time - adc step - read
+- relaxation time - refocus rest -> loop
+
+This way we can reuse the propagation matrices when they reappear: eg. in the standard mese protocol the calculations
+after the first refocussing pulse are identical. The pulses and timings are equal and can be expressed through one
+propagation matrix. This then has to be distributed over the changing magnetization vectors and throughout
+the acquisition.
+
+The calculation is setup to scale across tensor dimensions. It is able to be run on the GPU. Different inputs can be
+tracked with the requires_grad keyword to make them optimizable (magnetization profiles, pulses, etc.).
+"""
+from emc_sim import options, prep, functions, plotting
 import time
 import logging
 import torch
 import tqdm
-import numpy as np
 
 logModule = logging.getLogger(__name__)
 
 
-def mese(sim_params: options.SimulationParameters, sim_data: options.SimulationData):
-    """ want to set up gradients and pulses like in the mese standard protocol"""
-    logModule.debug(f"Start Simulation: params {sim_data.get_run_params()}")
+def mese(sim_params: options.SimulationParameters, device: torch.device):
+    """ want to set up gradients and pulses like in the mese standard protocol
+    For this we need all parts that are distinct and then set them up to pulss the calculation through
+    """
+    logModule.debug(f"Start Simulation")
     t_start = time.time()
     plot_idx = 0
+    logModule.debug(f"torch device: {device}")
+    logModule.debug(f"setup simulation data")
+    # set up sample and initial magnetization + data carry
+    sim_data = options.SimulationData.from_sim_parameters(sim_params=sim_params, device=device)
 
-    # set up data carry
-    tmp_data = options.SimTempData(sim_params=sim_params)
-    tmp_data.run = sim_data
-    # set up running plot
+    # set up running plot and plot initial magnetization
     fig = plotting.prep_plot_running_mag(10, 1)
-    # prep pulse grad data
-    gp_excitation, gps_refocus, timing, acquisition = prep.prep_gradient_pulse_mese(
-        sim_params=sim_params, sim_tmp_data=tmp_data
-    )
-
-    fig = plotting.plot_running_mag(fig, tmp_data, id=plot_idx)
+    fig = plotting.plot_running_mag(fig, sim_data, id=plot_idx)
     plot_idx += 1
+
+    # prep pulse grad data - this holds the pulse data and timings
+    gp_excitation, gps_refocus, timing, acquisition = prep.prep_gradient_pulse_mese(
+        sim_params=sim_params
+    )
 
     # --- starting sim matrix propagation --- #
     logModule.debug("excitation")
-    tmp_data.magnetization_propagation = functions.propagte_grad_pulse(
-        mag_tensor=tmp_data.magnetization_propagation,
-        grad_t=gp_excitation.data_grad, pulse_t=gp_excitation.data_pulse,
-        dt_us=gp_excitation.dt_sampling_steps, sample_axis=tmp_data.sample_axis,
-        t1_s=tmp_data.run.t1_s, t2_s=tmp_data.run.t2_s
+    gp_excitation.set_device(device)
+    mat_prop_exci = functions.propagate_gradient_pulse_relax(
+        pulse_x=gp_excitation.data_pulse_x, pulse_y=gp_excitation.data_pulse_y, grad=gp_excitation.data_grad,
+        sim_data=sim_data, dt_s=gp_excitation.dt_sampling_steps*1e-6
     )
 
-    fig = plotting.plot_running_mag(fig, tmp_data, id=plot_idx)
+    fig = plotting.plot_running_mag(fig, sim_data, id=plot_idx)
     plot_idx += 1
-    for loop_idx in tqdm.trange(sim_params.sequence.ETL):
-        # ----- refocusing loop - echo train -----
-        logModule.debug(f'run {loop_idx + 1}')
 
-        # delay before pulse
-        tmp_data.magnetization_propagation = functions.matrix_propagation_relaxation(
-            mag_tensor=tmp_data.magnetization_propagation,
-            dt_us=timing.time_pre_pulse[loop_idx],
-            t1_s=tmp_data.run.t1_s, t2_s=tmp_data.run.t2_s)
-
-        # pulse
-        tmp_data.magnetization_propagation = functions.propagte_grad_pulse(
-            mag_tensor=tmp_data.magnetization_propagation,
-            grad_t=gps_refocus[loop_idx].data_grad,
-            pulse_t=gps_refocus[loop_idx].data_pulse,
-            dt_us=gps_refocus[loop_idx].dt_sampling_steps,
-            sample_axis=tmp_data.sample_axis,
-            t1_s=tmp_data.run.t1_s, t2_s=tmp_data.run.t2_s
+    # calculate matrices that are actually needed
+    # first refocusing
+    mat_prop_ref1_pre_time = functions.matrix_propagation_relaxation_multidim(
+            dt_s=timing.time_pre_pulse[0]*1e-6, sim_data=sim_data
         )
 
-        # if simParams.config.debuggingFlag and simParams.config.visualize:
-        fig = plotting.plot_running_mag(fig, tmp_data, id=plot_idx)
-        plot_idx += 1
+    mat_prop_ref1_pulse = functions.propagate_gradient_pulse_relax(
+        pulse_x=gps_refocus[0].data_pulse_x, pulse_y=gps_refocus[0].data_pulse_y,
+        grad=gps_refocus[0].data_grad, sim_data=sim_data, dt_s=gps_refocus[0].dt_sampling_steps*1e-6
+    )
 
-        # delay after pulse
-        tmp_data.magnetization_propagation = functions.matrix_propagation_relaxation(
-            mag_tensor=tmp_data.magnetization_propagation,
-            dt_us=timing.time_post_pulse[loop_idx], t1_s=tmp_data.run.t1_s, t2_s=tmp_data.run.t2_s)
+    mat_prop_ref1_post_time = functions.matrix_propagation_relaxation_multidim(
+        dt_s=timing.time_post_pulse[0]*1e-6, sim_data=sim_data
+    )
+    # combined
+    mat_prop_ref_1 = torch.matmul(torch.matmul(mat_prop_ref1_pulse, mat_prop_ref1_pre_time), mat_prop_ref1_post_time)
 
-        # acquisition
-        for acq_idx in range(sim_params.settings.acquisition_number):
-            tmp_data.magnetization_propagation = functions.propagte_grad_pulse(
-                mag_tensor=tmp_data.magnetization_propagation,
-                grad_t=acquisition.data_grad,
-                pulse_t=acquisition.data_pulse,
-                dt_us=acquisition.dt_sampling_steps,
-                sample_axis=tmp_data.sample_axis, t1_s=tmp_data.run.t1_s, t2_s=tmp_data.run.t2_s
-            )
+    # other refocusing
+    mat_prop_ref_pre_time = functions.matrix_propagation_relaxation_multidim(
+            dt_s=timing.time_pre_pulse[1]*1e-6, sim_data=sim_data
+        )
 
-            mag_data_cmplx = tmp_data.magnetization_propagation[:, 0] + 1j * tmp_data.magnetization_propagation[:, 1]
-            tmp_data.signal_tensor[loop_idx, acq_idx] = torch.divide(
-                torch.sum(mag_data_cmplx),
-                100 * sim_params.settings.length_z / sim_params.settings.sample_number
-            )
+    mat_prop_ref_pulse = functions.propagate_gradient_pulse_relax(
+        pulse_x=gps_refocus[1].data_pulse_x, pulse_y=gps_refocus[1].data_pulse_y,
+        grad=gps_refocus[1].data_grad, sim_data=sim_data, dt_s=gps_refocus[1].dt_sampling_steps*1e-6
+    )
+
+    mat_prop_ref_post_time = functions.matrix_propagation_relaxation_multidim(
+        dt_s=timing.time_post_pulse[1]*1e-6, sim_data=sim_data
+    )
+    # combined
+    mat_prop_ref = torch.matmul(torch.matmul(mat_prop_ref_pulse, mat_prop_ref_pre_time), mat_prop_ref_post_time)
+
+    # acquisition steps
+    mat_prop_acq_step = functions.propagate_gradient_pulse_relax(
+        pulse_x=acquisition.data_pulse_x, pulse_y=acquisition.data_pulse_y,
+        grad=acquisition.data_grad, dt_s=acquisition.dt_sampling_steps*1e-6,
+        sim_data=sim_data)
+
+
+    # propagate
+    logModule.debug(f"start matrix propagation")
+    # init mag profile has dims [samples, 4] need to cast to dictionary entries, t1s t2s b1s
+    sim_data = functions.propagate_matrix_mag_vector(mat_prop_exci, sim_data)
+    sim_data = functions.propagate_matrix_mag_vector(mat_prop_ref_1, sim_data)
+    # read steps
+    # acquisition
+    sim_data = functions.sample_acquisition(
+        etl_idx=0, sim_params=sim_params, sim_data=sim_data,
+        acquisition_matrix_propagator=mat_prop_acq_step
+    )
+
+    # after first read we can loop over rest with the same matrices,
+    # since timing and pulses are equal in standard mese scheme
+    for loop_idx in tqdm.trange(sim_params.sequence.ETL-1):
+        # ----- refocusing loop - echo train -----
+        logModule.debug(f'pulse - loop {loop_idx + 2}')
+        # propagate pulse and timing
+        sim_data = functions.propagate_matrix_mag_vector(mat_prop_ref, sim_data)
+        # do acquisition steps
+        sim_data = functions.sample_acquisition(
+            etl_idx=loop_idx+1, sim_params=sim_params, sim_data=sim_data,
+            acquisition_matrix_propagator=acquisition
+        )
 
     logModule.debug('Signal array processing fourier')
-    image_tensor = torch.fft.fftshift(torch.fft.fft(torch.fft.fftshift(tmp_data.signal_tensor)))
-    sim_data.emc_signal_mag = 2 * torch.sum(torch.abs(image_tensor), axis=1) / sim_params.settings.acquisition_number
-    sim_data.emc_signal_phase = 2 * torch.sum(torch.angle(image_tensor), axis=1) / sim_params.settings.acquisition_number
+    image_tensor = torch.fft.fftshift(
+        torch.fft.fft(
+            torch.fft.fftshift(
+                sim_data.signal_tensor, dim=-1
+            ), dim=-1
+        ), dim=-1
+    )
+    sim_data.emc_signal_mag = 2 * torch.sum(torch.abs(image_tensor), dim=-1) / sim_params.settings.acquisition_number
+    sim_data.emc_signal_phase = 2 * torch.sum(torch.angle(image_tensor), dim=-11) / sim_params.settings.acquisition_number
 
     if sim_params.sequence.ETL % 2 > 0:
         # for some reason we get a shift from the fft when used with odd array length.
@@ -101,8 +143,10 @@ def mese(sim_params: options.SimulationParameters, sim_data: options.SimulationD
     return sim_data, sim_params
 
 
-def single_pulse(sim_params: options.SimulationParameters, sim_data: options.SimulationData):
+def single_pulse(sim_params: options.SimulationParameters, device: torch.device):
     """assume T2 > against pulse width"""
+    logModule.debug(f"torch device: {device}")
+
     # set tensor of k value-tuples to simulate for, here only b1
     n_b1 = 5
     b1_vals = torch.linspace(0.5, 1.4, n_b1)
@@ -111,35 +155,29 @@ def single_pulse(sim_params: options.SimulationParameters, sim_data: options.Sim
 
     sim_params.settings.sample_number = 500
     sim_params.settings.length_z = 0.005
+    sim_params.settings.t2_list = t2_vals.tolist()
+    sim_params.settings.b1_list = b1_vals.tolist()
 
-    tmp_data = options.SimTempData(sim_params=sim_params)
-    tmp_data.run = sim_data
-    initial_magnetization = tmp_data.magnetization_propagation
+    sim_data = options.SimulationData.from_sim_parameters(sim_params=sim_params, device=device)
 
-    gp_single = prep.GradPulse.prep_single_grad_pulse(
-        params=sim_params, sim_temp_data=tmp_data, grad_rephase_factor=0.0)
-    #
-    # plot_idx = 0
-    # fig = plotting.prep_plot_running_mag(2, 1)
-    # # excite only
-    # fig = plotting.plot_running_mag(fig, tmp_data, id=plot_idx)
-    # plot_idx += 1
-    #
-    # # --- starting sim matrix propagation --- #
-    # logModule.debug("excitation")
-    # matrix_propagation = functions.matrix_effect_grad_pulse_multi_dim(
-    #     t2_tensor=t2_vals, b1_tensor=b1_vals,
-    #     grad=gp_single.data_grad, pulse_x=gp_single.data_pulse.real.to(dtype=torch.float32),
-    #     pulse_y=gp_single.data_pulse.imag.to(torch.float32),
-    #     dt_us=gp_single.dt_sampling_steps, sample_axis=tmp_data.sample_axis,
-    #     t1_s=tmp_data.run.t1_s)
-    #
-    # tmp_magnetization_propagation = torch.einsum('ijklm, kl -> ijkm', matrix_propagation,
-    #                                              initial_magnetization)
-    # tmp_data.magnetization_propagation = tmp_magnetization_propagation[0, 2]
-    # fig = plotting.plot_running_mag(fig, tmp_data, id=plot_idx)
-    # plot_idx += 1
-    # plotting.display_running_plot(fig)
+    grad_pulse_data = prep.GradPulse.prep_single_grad_pulse(
+        params=sim_params, excitation_flag=True, grad_rephase_factor=1.0
+    )
 
-    pulse_optimization.optimize(sim_params=sim_params, grad_pulse=gp_single)
+    plot_idx = 0
+    fig = plotting.prep_plot_running_mag(2, 1)
+    # excite only
+    fig = plotting.plot_running_mag(fig, sim_data=sim_data, id=plot_idx)
+    plot_idx += 1
+
+    # --- starting sim matrix propagation --- #
+    logModule.debug("excitation")
+    prop_mat_pulse = functions.propagate_gradient_pulse_relax(
+        grad=grad_pulse_data.data_grad, pulse_x=grad_pulse_data.data_pulse_x,
+        pulse_y=grad_pulse_data.data_pulse_y, dt_s=grad_pulse_data.dt_sampling_steps*1e-6, sim_data=sim_data)
+
+    sim_data = functions.propagate_matrix_mag_vector(prop_mat_pulse, sim_data)
+    fig = plotting.plot_running_mag(fig, sim_data, id=plot_idx)
+    plot_idx += 1
+    plotting.display_running_plot(fig)
 
