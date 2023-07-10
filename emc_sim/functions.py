@@ -6,30 +6,33 @@ from emc_sim import options, prep
 
 
 def pulseCalibrationIntegral(pulse: torch.tensor,
-                             deltaT: float,
-                             simParams: options.SimulationParameters,
+                             delta_t: float,
+                             sim_params: options.SimulationParameters,
                              excitation: bool,
-                             pulseNumber: int = 0) -> torch.tensor:
+                             pulse_number: int = 0) -> torch.tensor:
     """
     Calibrates pulse waveform for given flip angle, adds phase if given
     """
-    # get different b1s to simulate for
-    b1_vals = torch.tensor(simParams.settings.b1_list)
+    # get b1 values - error catch again if single value is given
+    b1_vals = sim_params.settings.b1_list
+    if type(b1_vals) != list:
+        b1_vals = [b1_vals]
+    b1_vals = torch.tensor(b1_vals)
     # normalize
-    b1Pulse = pulse / torch.norm(pulse)
+    b1_pulse = pulse / torch.norm(pulse)
     # integrate (discrete steps) total flip angle achieved with the normalized pulse
-    flipAngleNormalizedB1 = torch.sum(torch.abs(b1Pulse * simParams.sequence.gamma_pi)) * deltaT * 1e-6
+    flip_angle_normalized_b1 = torch.sum(torch.abs(b1_pulse * sim_params.sequence.gamma_pi)) * delta_t * 1e-6
     if excitation:
-        angleFlip = simParams.sequence.excitation_angle
-        phase = simParams.sequence.excitation_phase / 180.0 * torch.pi
+        angle_flip = sim_params.sequence.excitation_angle
+        phase = sim_params.sequence.excitation_phase / 180.0 * torch.pi
     else:
         # excitation pulse always 0th pulse
-        angleFlip = simParams.sequence.refocus_angle[pulseNumber - 1]
-        phase = simParams.sequence.refocus_phase[pulseNumber - 1] / 180.0 * torch.pi
-    angleFlip *= torch.pi / 180 * b1_vals  # calculate with applied actual flip angle offset
-    b1PulseCalibrated = b1Pulse[None, :] * (angleFlip[:, None] / flipAngleNormalizedB1) * \
+        angle_flip = sim_params.sequence.refocus_angle[pulse_number - 1]
+        phase = sim_params.sequence.refocus_phase[pulse_number - 1] / 180.0 * torch.pi
+    angle_flip *= torch.pi / 180 * b1_vals  # calculate with applied actual flip angle offset
+    b1_pulse_calibrated = b1_pulse[None, :] * (angle_flip[:, None] / flip_angle_normalized_b1) * \
                         torch.exp(torch.tensor(1j * phase))
-    return b1PulseCalibrated
+    return b1_pulse_calibrated
 
 
 def propagate_matrix_mag_vector(propagation_matrix: torch.tensor, sim_data: options.SimulationData):

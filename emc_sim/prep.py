@@ -60,15 +60,20 @@ class GradPulse:
         self._set_exci_flag()
 
     def set_device(self, device: torch.device):
-        self.data_pulse_x.to(device)
-        self.data_pulse_y.to(device)
-        self.data_grad.to(device)
+        self.data_pulse_x = self.data_pulse_x.to(device)
+        self.data_pulse_y = self.data_pulse_y.to(device)
+        self.data_grad = self.data_grad.to(device)
 
     def _set_exci_flag(self):
         if self.pulse_type == 'Excitation':
             self.excitation_flag = True
         else:
             self.excitation_flag = False
+
+    def _set_float32(self):
+        self.data_grad = self.data_grad.to(dtype=torch.float32)
+        self.data_pulse_x = self.data_pulse_x.to(dtype=torch.float32)
+        self.data_pulse_y = self.data_pulse_y.to(dtype=torch.float32)
 
     @classmethod
     def prep_grad_pulse(cls, pulse_type: str = 'Excitation', pulse_number: int = 0, sym_spoil: bool = True,
@@ -91,9 +96,9 @@ class GradPulse:
         # calculate and normalize
         pulse_from_rfpf = functions.pulseCalibrationIntegral(
             pulse=pulse,
-            deltaT=rf.get_dt_sampling_in_us(),
-            pulseNumber=pulse_number,
-            simParams=params,
+            delta_t=rf.get_dt_sampling_in_us(),
+            pulse_number=pulse_number,
+            sim_params=params,
             excitation=excitation_flag)
 
         if sym_spoil:
@@ -152,6 +157,7 @@ class GradPulse:
         grad_pulse.data_pulse_y = pulse.imag
         grad_pulse.duration = rf.duration_in_us
 
+        grad_pulse._set_float32()
         return grad_pulse
 
     @staticmethod
@@ -214,9 +220,9 @@ class GradPulse:
         # calculate and normalize
         pulse_from_rfpf = functions.pulseCalibrationIntegral(
             pulse=pulse,
-            deltaT=rf.get_dt_sampling_in_us(),
-            pulseNumber=0,
-            simParams=params,
+            delta_t=rf.get_dt_sampling_in_us(),
+            pulse_number=0,
+            sim_params=params,
             excitation=True)
 
         # build verse pulse gradient
@@ -253,6 +259,7 @@ class GradPulse:
         grad_pulse.data_pulse_y = pulse.imag
         grad_pulse.duration = rf.duration_in_us
 
+        grad_pulse._set_float32()
         return grad_pulse
 
     @classmethod
@@ -269,6 +276,7 @@ class GradPulse:
         grad_pulse.data_pulse_x = torch.linspace(0, 0, 1)
         grad_pulse.data_pulse_y = torch.linspace(0, 0, 1)
         grad_pulse.duration = params.sequence.duration_acquisition
+        grad_pulse._set_float32()
         return grad_pulse
 
 

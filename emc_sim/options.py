@@ -255,21 +255,32 @@ class SimulationData:
 
     @classmethod
     def from_sim_parameters(cls, sim_params: SimulationParameters, device: torch.device):
-        # set values
-        t1_vals = torch.tensor(sim_params.settings.t1_list, device=device)
-        b1_vals = torch.tensor(sim_params.settings.b1_list, device=device)
+        # set values with some error catches
+        # t1
+        if type(sim_params.settings.t1_list) == list:
+            t1_vals = torch.tensor(sim_params.settings.t1_list, device=device)
+        else:
+            t1_vals = torch.tensor([sim_params.settings.t1_list], dtype=torch.float32, device=device)
+        # b1
+        if type(sim_params.settings.b1_list) == list:
+            b1_vals = torch.tensor(sim_params.settings.b1_list, device=device)
+        else:
+            b1_vals = torch.tensor([sim_params.settings.b1_list], dtype=torch.float32, device=device)
         # t2
         array = []
-        for item in sim_params.settings.t2_list:
-            if type(item) == str:
-                item = [float(i) for i in item[1:-1].split(',')]
-            if type(item) == int:
-                item = float(item)
-            if type(item) == float:
-                array.append(item)
-            else:
-                array.extend(torch.arange(*item).tolist())
-        array = torch.tensor(array)
+        if type(sim_params.settings.t2_list) == list:
+            for item in sim_params.settings.t2_list:
+                if type(item) == str:
+                    item = [float(i) for i in item[1:-1].split(',')]
+                if type(item) == int:
+                    item = float(item)
+                if type(item) == float:
+                    array.append(item)
+                else:
+                    array.extend(torch.arange(*item).tolist())
+        else:
+            array = [sim_params.settings.t2_list]
+        array = torch.tensor(array, dtype=torch.float32)
         array /= 1000.0  # cast to s
         t2_vals = array.to(device)
 

@@ -1,4 +1,4 @@
-from emc_sim import options, pulse_optimization
+from emc_sim import options, simulations
 import logging
 
 
@@ -18,7 +18,7 @@ def main():
     try:
         # sim_data, sim_params = simulations.mese(sim_params=sim_params, sim_data=sim_data)
         # plotting.plot_emc_sim_data(sim_data)
-        pulse_optimization.optimize(sim_params=sim_params)
+        simulations.single_pulse(sim_params=sim_params)
     except Exception as e:
         print(e)
         parser.print_usage()

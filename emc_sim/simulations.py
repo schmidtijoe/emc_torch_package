@@ -22,13 +22,14 @@ import tqdm
 logModule = logging.getLogger(__name__)
 
 
-def mese(sim_params: options.SimulationParameters, device: torch.device):
+def mese(sim_params: options.SimulationParameters):
     """ want to set up gradients and pulses like in the mese standard protocol
     For this we need all parts that are distinct and then set them up to pulss the calculation through
     """
     logModule.debug(f"Start Simulation")
     t_start = time.time()
     plot_idx = 0
+    device = torch.device('cuda:0' if torch.cuda.is_available() else "cpu")
     logModule.debug(f"torch device: {device}")
     logModule.debug(f"setup simulation data")
     # set up sample and initial magnetization + data carry
@@ -143,26 +144,29 @@ def mese(sim_params: options.SimulationParameters, device: torch.device):
     return sim_data, sim_params
 
 
-def single_pulse(sim_params: options.SimulationParameters, device: torch.device):
+def single_pulse(sim_params: options.SimulationParameters):
     """assume T2 > against pulse width"""
+    device = torch.device('cuda:1' if torch.cuda.is_available() else "cpu")
     logModule.debug(f"torch device: {device}")
 
     # set tensor of k value-tuples to simulate for, here only b1
-    n_b1 = 5
-    b1_vals = torch.linspace(0.5, 1.4, n_b1)
-    n_t2 = 2
-    t2_vals = torch.linspace(0.035, 0.05, n_t2)
+    n_b1 = 1
+    # b1_vals = torch.linspace(0.5, 1.4, n_b1)
+    b1_vals = torch.tensor(1.0)
+    n_t2 = 1
+    # t2_vals_ms = torch.linspace(35, 50, n_t2)
+    t2_vals_ms = torch.tensor(50)
 
     sim_params.settings.sample_number = 500
     sim_params.settings.length_z = 0.005
-    sim_params.settings.t2_list = t2_vals.tolist()
+    sim_params.settings.t2_list = t2_vals_ms.tolist()
     sim_params.settings.b1_list = b1_vals.tolist()
-
     sim_data = options.SimulationData.from_sim_parameters(sim_params=sim_params, device=device)
 
     grad_pulse_data = prep.GradPulse.prep_single_grad_pulse(
         params=sim_params, excitation_flag=True, grad_rephase_factor=1.0
     )
+    grad_pulse_data.set_device(device)
 
     plot_idx = 0
     fig = plotting.prep_plot_running_mag(2, 1)
