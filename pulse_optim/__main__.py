@@ -81,9 +81,6 @@ def func_to_calculate(pulse_x: torch.tensor, pulse_y: torch.tensor,
 
 
 def configure(sim_params: eso.SimulationParameters, optim_config: options.ConfigOptimization):
-    # folder structure
-    optim_config.__post_init__()
-
     # gpu device
     seed = optim_config.random_seed
     device = torch.device('cuda:0' if torch.cuda.is_available() else "cpu")
@@ -97,6 +94,8 @@ def configure(sim_params: eso.SimulationParameters, optim_config: options.Config
     sim_params.settings.t2_list = [50]  # in ms
     # smaller fov to emphasize profile
     sim_params.settings.length_z = 3e-3
+    # set run name and folder
+    optim_config.set_name()
 
     return sim_params, optim_config, device
 
@@ -151,7 +150,6 @@ def set_init_tensors(sim_params: eso.SimulationParameters, device: torch.device)
 
 def optimize(sim_params: eso.SimulationParameters, optim_config: options.ConfigOptimization):
     # overwrite everything that is used by sweep should go automatically
-
     # configure gpu, folder names etc
     sim_params, optim_config, device = configure(sim_params=sim_params, optim_config=optim_config)
 

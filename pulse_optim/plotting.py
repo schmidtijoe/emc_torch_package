@@ -19,7 +19,7 @@ def plot_losses(loss_tracker: list, config: options.ConfigOptimization):
     # append to filename
     stem = config.optim_save_path.stem
     filename = config.optim_save_path.with_name(f"{stem}_loss")
-    plotly.offline.plot(fig, filename=filename.with_suffix(".html"))
+    plotly.offline.plot(fig, filename=filename.with_suffix(".html").as_posix())
 
 
 def plot_mag_prop(sim_data: eso.SimulationData,
@@ -67,7 +67,7 @@ def plot_mag_prop(sim_data: eso.SimulationData,
     # append to filename
     stem = config.optim_save_path.stem
     filename = config.optim_save_path.with_name(f"{stem}_mag_profile_{run}")
-    plotly.offline.plot(fig, filename=filename.with_suffix(".html"))
+    plotly.offline.plot(fig, filename=filename.with_suffix(".html").as_posix())
 
 
 def plot_grad_pulse_optim_run(run: int, px: torch.tensor, py: torch.tensor, g: torch.tensor, gr: torch.tensor,

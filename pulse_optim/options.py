@@ -23,7 +23,7 @@ class ConfigOptimization(sp.Serializable):
     random_seed: int = sp.field(alias="-ors", default=0)
     num_steps: int = sp.field(alias="-ons", default=100)
 
-    def __post_init__(self):
+    def set_name(self):
         self.optim_save_path = plib.Path(self.optim_save_path).absolute()
         self.optim_save_path = self.optim_save_path.joinpath(f"run-{self.run}")
         optim_name = f"lr-{str(self.lr).replace('.', 'p')}_mom-{str(self.momentum).replace('.', 'p')}" \
