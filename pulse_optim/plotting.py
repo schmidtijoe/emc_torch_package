@@ -3,10 +3,11 @@ import torch
 import plotly.graph_objects as go
 import plotly.subplots as psub
 import plotly.express.colors as pxc
-from emc_sim import options
+from emc_sim import options as eso
+from pulse_optim import options
 
 
-def plot_losses(loss_tracker: list, name: str = ""):
+def plot_losses(loss_tracker: list, config: options.ConfigOptimization):
     fig = go.Figure()
     names = ["loss", "shape", "power", "grad", "smooth", "ramps"]
     for loss_list_idx in range(loss_tracker.__len__()):
@@ -15,12 +16,15 @@ def plot_losses(loss_tracker: list, name: str = ""):
             go.Scatter(x=torch.arange(loss_tracker[loss_list_idx].__len__()),
                        y=l, name=names[loss_list_idx])
         )
-    plotly.offline.plot(fig, filename=f"optim/{name}_loss.html")
+    # append to filename
+    stem = config.optim_save_path.stem
+    filename = config.optim_save_path.with_name(f"{stem}_loss")
+    plotly.offline.plot(fig, filename=filename.with_suffix(".html"))
 
 
-def plot_mag_prop(sim_data: options.SimulationData,
+def plot_mag_prop(sim_data: eso.SimulationData,
                   target_mag: torch.tensor, target_phase: torch.tensor, target_z: torch.tensor, run: int,
-                  name: str = ""):
+                  config: options.ConfigOptimization):
     x_ax = sim_data.sample_axis.clone().detach().cpu()
     target_mag_plot = target_mag.clone().detach().cpu()
     target_phase_plot = target_phase.clone().detach().cpu()
@@ -60,11 +64,14 @@ def plot_mag_prop(sim_data: options.SimulationData,
             go.Scatter(x=x_ax, y=target_phase_plot[k, :], name="target - phase", marker={"color": colors[5]}),
             row=k + 1, col=1
         )
-    plotly.offline.plot(fig, filename=f"optim/optim_magnetization_profile_{name}_{run}.html")
+    # append to filename
+    stem = config.optim_save_path.stem
+    filename = config.optim_save_path.with_name(f"{stem}_mag_profile_{run}")
+    plotly.offline.plot(fig, filename=filename.with_suffix(".html"))
 
 
 def plot_grad_pulse_optim_run(run: int, px: torch.tensor, py: torch.tensor, g: torch.tensor, gr: torch.tensor,
-                              name: str = ""):
+                              config: options.ConfigOptimization):
     pick_b1 = int(px.shape[0] / 2)
     shape_plot = px.shape[1] + 10 * gr.shape[0]
     g_plot = torch.zeros(shape_plot)
@@ -94,4 +101,7 @@ def plot_grad_pulse_optim_run(run: int, px: torch.tensor, py: torch.tensor, g: t
         go.Scatter(x=x_axis, y=torch.sqrt(px_plot ** 2 + py_plot ** 2), fill="tozeroy", name="p abs"),
         row=1, col=1
     )
-    plotly.offline.plot(fig, filename=f"optim/optimization_grad_pulse_run_{name}_{run}.html")
+    # append to filename
+    stem = config.optim_save_path.stem
+    filename = config.optim_save_path.with_name(f"{stem}_optim_grad_pulse_step-{run}")
+    plotly.offline.plot(fig, filename=filename.with_suffix(".html").as_posix())

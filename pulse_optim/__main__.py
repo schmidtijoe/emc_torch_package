@@ -1,11 +1,18 @@
 """ want to use torch gradient decent to optimize pulse shape"""
+import sys
+import pathlib as plib
+
+p_wd = plib.Path("/data/pt_np-jschmidt/code/emc_torch").absolute()
+sys.path.append(p_wd.as_posix())
+
 import torch
-from emc_sim import functions, options, prep
-from pulse_optim import plotting
+from emc_sim import functions, prep
+from emc_sim import options as eso
+from pulse_optim import plotting, options
 import logging
 import tqdm.auto
 from collections import OrderedDict
-import pathlib as plib
+import wandb
 
 logModule = logging.getLogger(__name__)
 
@@ -52,7 +59,7 @@ def loss_pulse_optim(tmp_magnetization: torch.tensor,
 
 def func_to_calculate(pulse_x: torch.tensor, pulse_y: torch.tensor,
                       grad: torch.tensor, grad_rephase: torch.tensor,
-                      sim_data: options.SimulationData, dt_s: float,
+                      sim_data: eso.SimulationData, dt_s: float,
                       target_mag: torch.tensor, target_phase: torch.tensor, target_z: torch.tensor):
     # pulse gradient propagation
     matrix_propagation_pulse = functions.propagate_gradient_pulse_relax(
@@ -73,12 +80,14 @@ def func_to_calculate(pulse_x: torch.tensor, pulse_y: torch.tensor,
                             p_x=pulse_x, p_y=pulse_y, g=grad, g_re=grad_rephase), sim_data
 
 
-def setup_and_run(sim_params: options.SimulationParameters):
-    name = "run11_rand-mid_seed-1_act-tanh-lr0p1"
+def configure(sim_params: eso.SimulationParameters, optim_config: options.ConfigOptimization):
+    # folder structure
+    optim_config.__post_init__()
+
     # gpu device
-    seed = 1
-    device = torch.device('cuda:1' if torch.cuda.is_available() else "cpu")
-    logModule.info(f"run_name: {name}; torch device: {device}; rng seed: {seed}")
+    seed = optim_config.random_seed
+    device = torch.device('cuda:0' if torch.cuda.is_available() else "cpu")
+    logModule.info(f"run: {optim_config.run}; torch device: {device}; rng seed: {seed}")
     # set rng
     torch.manual_seed(seed)
     # set b1_value range
@@ -89,13 +98,19 @@ def setup_and_run(sim_params: options.SimulationParameters):
     # smaller fov to emphasize profile
     sim_params.settings.length_z = 3e-3
 
+    return sim_params, optim_config, device
+
+
+def set_init_tensors(sim_params: eso.SimulationParameters, device: torch.device):
     # set pulse original
     grad_pulse = prep.GradPulse.prep_single_grad_pulse(
         params=sim_params, excitation_flag=True, grad_rephase_factor=0.0)
     # get initial magnetization
-    sim_data = options.SimulationData.from_sim_parameters(sim_params=sim_params, device=device)
+    sim_data = eso.SimulationData.from_sim_parameters(sim_params=sim_params, device=device)
     initial_magnetization = sim_data.magnetization_propagation
     sample_axis = sim_data.sample_axis
+    # get num b1s
+    n_b1s = sim_params.settings.b1_list.__len__()
 
     # get sampling time -> from us to s
     dt_s = torch.tensor(grad_pulse.dt_sampling_steps * 1e-6).to(device)
@@ -131,20 +146,33 @@ def setup_and_run(sim_params: options.SimulationParameters):
     g = torch.rand(size=(int(grad_pulse.data_grad.shape[0] / 10),), requires_grad=True, device=device)
     g_re = torch.rand(size=(50,), requires_grad=True, device=device)
 
+    return px, py, p_max, g, g_re, g_max, target_shape_mag_abs, target_shape_mag_phase, target_shape_mag_z, dt_s
+
+
+def optimize(sim_params: eso.SimulationParameters, optim_config: options.ConfigOptimization):
+    # overwrite everything that is used by sweep should go automatically
+
+    # configure gpu, folder names etc
+    sim_params, optim_config, device = configure(sim_params=sim_params, optim_config=optim_config)
+
+    # configure tensors, target, initial guesses etc.
+    px, py, p_max, g, g_re, g_max, target_shape_mag, target_shape_phase, target_shape_z, dt_s = set_init_tensors(
+        sim_params=sim_params, device=device
+    )
+
     # set optimizer
-    optimizer = torch.optim.SGD([px, py, g, g_re], lr=0.1, momentum=0.5)
-    steps = 120
-    loss_tracker = [[], [], [], [], [], []]
+    optimizer = torch.optim.SGD([px, py, g, g_re], lr=optim_config.lr, momentum=optim_config.momentum)
+    # losses
+    loss_names = ["loss", "shape", "power", "grad", "smooth", "ramps"]
+    # torch.autograd.set_detect_anomaly(True)
 
-    torch.autograd.set_detect_anomaly(True)
-
-    with tqdm.auto.trange(steps) as t:
+    with tqdm.auto.trange(optim_config.num_steps) as t:
         t.set_description(f"progress")
         t.set_postfix(ordered_dict=OrderedDict({"loss": -1, "power": torch.sum(torch.sqrt(px ** 2 + py ** 2)).item(),
                                                 "g max": torch.max(torch.abs(g)).item()}))
         for i in t:
             # reset simulation data
-            sim_data = options.SimulationData.from_sim_parameters(sim_params=sim_params, device=device)
+            sim_data = eso.SimulationData.from_sim_parameters(sim_params=sim_params, device=device)
             # reset gradients
             optimizer.zero_grad()
             # set input
@@ -155,10 +183,11 @@ def setup_and_run(sim_params: options.SimulationParameters):
             loss_tuple, sim_data = func_to_calculate(
                 pulse_x=px_input, pulse_y=py_input, grad=g_input, grad_rephase=gr_input,
                 sim_data=sim_data, dt_s=dt_s,
-                target_mag=target_shape_mag_abs, target_phase=target_shape_mag_phase, target_z=target_shape_mag_z
+                target_mag=target_shape_mag, target_phase=target_shape_phase, target_z=target_shape_z
             )
-            for l_idx in range(loss_tuple.__len__()):
-                loss_tracker[l_idx].append(loss_tuple[l_idx])
+            wandb.log({
+                loss_names[l_idx]: loss_tuple[l_idx] for l_idx in range(len(loss_tuple))
+            })
 
             loss = loss_tuple[0]
             loss.backward()
@@ -167,14 +196,16 @@ def setup_and_run(sim_params: options.SimulationParameters):
                                                     "power": torch.sum(torch.sqrt(px ** 2 + py ** 2)).item(),
                                                     "g max": torch.max(torch.abs(g)).item()}))
 
-    plotting.plot_grad_pulse_optim_run(i, px_input, py_input, g_input, gr_input, name=name)
+    plotting.plot_grad_pulse_optim_run(i, px_input, py_input, g_input, gr_input, config=optim_config)
     plotting.plot_mag_prop(sim_data=sim_data,
-                           target_mag=target_shape_mag_abs, target_phase=target_shape_mag_phase,
-                           target_z=target_shape_mag_z,
-                           run=i, name=name)
+                           target_mag=target_shape_mag, target_phase=target_shape_phase,
+                           target_z=target_shape_z,
+                           run=i, config=optim_config)
 
-    plotting.plot_losses(loss_tracker=loss_tracker, name=name)
+    # not necessarily needed for wandb tracking
+    # plotting.plot_losses(loss_tracker=loss_tracker, config=optim_config)
 
+    # build g and p from optimized parameters and save
     optim_px, optim_py, optim_g, optim_g_re = build_input_tensors(
         px, py, g, g_re, p_max, g_max, sim_data
     )
@@ -182,10 +213,10 @@ def setup_and_run(sim_params: options.SimulationParameters):
     optim_py *= 1 / sim_data.b1_vals[:, None]
     tensors = [optim_px[0], optim_py[0], optim_g, optim_g_re]
     names = ["px", "py", "g", "g_re"]
-    file_names = [plib.Path(f"./optim/optimized_{name}_{names[k]}.pt").absolute() for k in range(names.__len__())]
+    file_names = [f"{optim_config.optim_save_path.stem}_{names[k]}" for k in range(names.__len__())]
 
     for k in range(names.__len__()):
-        torch.save(tensors[k], file_names[k])
+        torch.save(tensors[k], optim_config.optim_save_path.with_name(file_names[k]).with_suffix(".pt").as_posix())
 
 
 def build_input_tensors(px, py, g, g_re, p_max, g_max, sim_data):
@@ -200,9 +231,11 @@ def build_input_tensors(px, py, g, g_re, p_max, g_max, sim_data):
 
 
 def main():
-    parser, prog_args = options.createCommandlineParser()
+    # create parser
+    parser, prog_args = options.create_cmd_line_interface()
 
-    sim_params = options.SimulationParameters.from_cmd_args(prog_args)
+    sim_params = eso.SimulationParameters.from_cmd_args(prog_args)
+    optim_config = options.ConfigOptimization.from_cmd_line_args(prog_args)
     # set logging level after possible config file read
     if sim_params.config.debug_flag:
         level = logging.DEBUG
@@ -212,8 +245,11 @@ def main():
     logging.basicConfig(format='%(asctime)s %(levelname)s :: %(name)s --  %(message)s',
                         datefmt='%I:%M:%S', level=level)
 
+    # setup wandb
+    wandb.init()
+
     try:
-        setup_and_run(sim_params=sim_params)
+        optimize(sim_params=sim_params, optim_config=optim_config)
 
     except Exception as e:
         print(e)
