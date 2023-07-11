@@ -19,16 +19,14 @@ def plot_losses(loss_tracker: list, config: options.ConfigOptimization):
     # append to filename
     stem = config.optim_save_path.stem
     filename = config.optim_save_path.with_name(f"{stem}_loss")
-    plotly.offline.plot(fig, filename=filename.with_suffix(".html").as_posix())
+    fig.write_html(filename.with_suffix(".html").as_posix())
 
 
 def plot_mag_prop(sim_data: eso.SimulationData,
-                  target_mag: torch.tensor, target_phase: torch.tensor, target_z: torch.tensor, run: int,
+                  target_profile: torch.tensor, run: int,
                   config: options.ConfigOptimization):
     x_ax = sim_data.sample_axis.clone().detach().cpu()
-    target_mag_plot = target_mag.clone().detach().cpu()
-    target_phase_plot = target_phase.clone().detach().cpu()
-    target_z_plot = target_z.clone().detach().cpu()
+    target_plot = target_profile.clone().detach().cpu()
     mag_prop = sim_data.magnetization_propagation[0, 0].clone().detach().cpu()
     b1s = sim_data.b1_vals.clone().detach().cpu()
     mag = mag_prop[:, :, 0] + 1j * mag_prop[:, :, 1]
@@ -51,23 +49,23 @@ def plot_mag_prop(sim_data: eso.SimulationData,
             row=k + 1, col=1
         )
         fig.add_trace(
-            go.Scatter(x=x_ax, y=target_mag_plot[k, :], fill="tozeroy", name="target - mag",
+            go.Scatter(x=x_ax, y=target_plot[0, k, :], fill="tozeroy", name="target - mag",
                        marker={"color": colors[3]}),
             row=k + 1, col=1
         )
         fig.add_trace(
-            go.Scatter(x=x_ax, y=target_z_plot[k, :], name="target - z mag",
+            go.Scatter(x=x_ax, y=target_plot[2, k, :], name="target - z mag",
                        marker={"color": colors[4]}),
             row=k + 1, col=1
         )
         fig.add_trace(
-            go.Scatter(x=x_ax, y=target_phase_plot[k, :], name="target - phase", marker={"color": colors[5]}),
+            go.Scatter(x=x_ax, y=target_plot[1, k, :], name="target - phase", marker={"color": colors[5]}),
             row=k + 1, col=1
         )
     # append to filename
     stem = config.optim_save_path.stem
     filename = config.optim_save_path.with_name(f"{stem}_mag_profile_{run}")
-    plotly.offline.plot(fig, filename=filename.with_suffix(".html").as_posix())
+    fig.write_html(filename.with_suffix(".html").as_posix())
 
 
 def plot_grad_pulse_optim_run(run: int, px: torch.tensor, py: torch.tensor, g: torch.tensor, gr: torch.tensor,
@@ -104,4 +102,4 @@ def plot_grad_pulse_optim_run(run: int, px: torch.tensor, py: torch.tensor, g: t
     # append to filename
     stem = config.optim_save_path.stem
     filename = config.optim_save_path.with_name(f"{stem}_optim_grad_pulse_step-{run}")
-    plotly.offline.plot(fig, filename=filename.with_suffix(".html").as_posix())
+    fig.write_html(filename.with_suffix(".html").as_posix())

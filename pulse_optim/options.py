@@ -20,8 +20,9 @@ class ConfigOptimization(sp.Serializable):
     run: int = sp.field(alias=["-onr"], default=0)
     lr: float = sp.field(alias=["-olr"], default=0.1)
     momentum: float = sp.field(alias=["-om"], default=0.5)
-    random_seed: int = sp.field(alias="-ors", default=0)
-    num_steps: int = sp.field(alias="-ons", default=100)
+    random_seed: int = sp.field(alias=["-ors"], default=0)
+    num_steps: int = sp.field(alias=["-ons"], default=100)
+    base_cos_scale: float = sp.field(alias=["-bcs"], default=0.5)
 
     def set_name(self):
         self.optim_save_path = plib.Path(self.optim_save_path).absolute()
