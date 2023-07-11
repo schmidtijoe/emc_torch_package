@@ -82,7 +82,7 @@ class GradPulse:
         logModule.debug(f'prep pulse {pulse_type}; # {pulse_number}')
         grad_pulse = cls(pulse_type=pulse_type, pulse_number=pulse_number)
         # set flag
-        excitation_flag: bool = (pulse_number == 0 & pulse_type == 'Excitation')
+        excitation_flag: bool = (pulse_number == 0) & (pulse_type == 'Excitation')
         # get duration & grad pulse detauls
         gp_details = GPDetails.get_gp_details(params=params, excitation_flag=excitation_flag)
         # read rfpf
@@ -273,8 +273,9 @@ class GradPulse:
             params.sequence.gradient_acquisition,
             params.sequence.gradient_acquisition,
             1)
-        grad_pulse.data_pulse_x = torch.linspace(0, 0, 1)
-        grad_pulse.data_pulse_y = torch.linspace(0, 0, 1)
+        # need to cast to pulse data dim [b1s, num_steps]
+        grad_pulse.data_pulse_x = torch.linspace(0, 0, 1)[None, :]
+        grad_pulse.data_pulse_y = torch.linspace(0, 0, 1)[None, :]
         grad_pulse.duration = params.sequence.duration_acquisition
         grad_pulse._set_float32()
         return grad_pulse
@@ -336,6 +337,10 @@ class Timing:
                 params.sequence.duration_acquisition / 2
         )
         return cls(time_pre_pulse=time_pre_pulse, time_post_pulse=time_post_pulse)
+
+    def set_device(self, device: torch.device):
+        self.time_post_pulse = self.time_post_pulse.to(device)
+        self.time_pre_pulse = self.time_pre_pulse.to(device)
 
 
 def prep_gradient_pulse_mese(

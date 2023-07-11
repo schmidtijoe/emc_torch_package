@@ -16,9 +16,13 @@ def main():
                         datefmt='%I:%M:%S', level=level)
 
     try:
-        # sim_data, sim_params = simulations.mese(sim_params=sim_params, sim_data=sim_data)
-        # plotting.plot_emc_sim_data(sim_data)
-        simulations.single_pulse(sim_params=sim_params)
+        # simulate
+        # simulations.single_pulse(sim_params=sim_params)
+        sim_data, sim_params = simulations.mese(sim_params=sim_params)
+        # plot simulation
+        # plotting.plot_emc(sim_data)
+        # save db
+
     except Exception as e:
         print(e)
         parser.print_usage()

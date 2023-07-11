@@ -66,14 +66,14 @@ def plot_running_mag(fig: go.Figure, sim_data: options.SimulationData, id: int):
     colors = sample_colorscale('viridis', np.linspace(0.9, 0.1, 6))
     fig.add_trace(
         go.Scatter(x=axis, y=torch.norm(plot_mag[:, :2], dim=1),
-                   name=f"mag_{labels[-1]}",
+                   name=f"{labels[-2]}",
                    line=dict(color=colors[-1]), fill='tozeroy'),
         row=id+1, col=1
     )
     fig.add_trace(
         go.Scatter(x=axis, y=torch.angle(
             plot_mag[:, 0] + 1j * plot_mag[:, 1]) / torch.pi,
-                   name=f"phase_{labels[-1]} [$\pi$]",
+                   name=f"{labels[-1]} [$\pi$]",
                    line=dict(color=colors[-2]), fill='tozeroy'),
         row=id+1, col=1
     )

@@ -55,14 +55,22 @@ def propagate_gradient_pulse_relax(
         grad: torch.tensor,
         sim_data: options.SimulationData,
         dt_s: torch.tensor) -> torch.tensor:
-    # get pulse matrices per step
-    propagation_matrix_steps = matrix_propagation_grad_pulse_multidim(
-        pulse_x=pulse_x, pulse_y=pulse_y, grad=grad, dt_s=dt_s, sim_data=sim_data)
+    # get pulse matrices per step and propagate
     # iterate through the pulse grad shape and multiply the matrix propagators
-    # dims [num_t1s, num_t2s, num_b1s, num_samples, num_pulse steps, 4, 4]
+    # dims [num_t1s, num_t2s, num_b1s, num_samples, 4, 4]
     propagation_matrix = torch.eye(4)[None, None, None, None].to(sim_data.device)
-    for i in range(propagation_matrix_steps.shape[4]):
-        propagation_matrix = torch.matmul(propagation_matrix, propagation_matrix_steps[:, :, :, :, i])
+    if torch.prod(torch.tensor(pulse_x.shape)) < 2:
+        iter_range = 1
+    else:
+        iter_range = pulse_x.shape[1]
+    for i in range(iter_range):
+        prop_setp = matrix_propagation_grad_pulse_multidim(
+                pulse_x=pulse_x[:, i], pulse_y=pulse_y[:, i], grad=grad[i], dt_s=dt_s, sim_data=sim_data
+            )
+        propagation_matrix = torch.matmul(
+            prop_setp,
+            propagation_matrix
+        )
     return propagation_matrix
 
 
@@ -126,22 +134,23 @@ def matrix_propagation_grad_pulse_multidim(
     (hard pulse approximation) and an amplitude value for the gradient"""
     # calculate rotation around x
     angle_x = 2 * torch.pi * dt_s * sim_data.gamma * pulse_x
-    r_x = rotation_matrix_x(sim_data.b1_vals[:, None] * angle_x)
+    r_x = rotation_matrix_x(angle_x)
     # calculate rotation around y
     angle_y = 2 * torch.pi * dt_s * sim_data.gamma * pulse_y
-    r_y = rotation_matrix_y(sim_data.b1_vals[:, None] * angle_y)
+    r_y = rotation_matrix_y(angle_y)
     # calculate rotation around z
-    angle_z = 2 * torch.pi * dt_s * sim_data.gamma * grad[None, :] * 1e-3 * sim_data.sample_axis[:, None]
+    angle_z = 2 * torch.pi * dt_s * sim_data.gamma * grad * 1e-3 * sim_data.sample_axis
     r_z = rotation_matrix_z(angle_z)
     # apply all
     r_xy = torch.matmul(r_x, r_y)
-    # r_xy dims [num_b1s, num_pulse steps, 4, 4]
-    # r_z dims [num_samples, num_pulse_steps, 4, 4]
+    # r_xy dims [num_b1s steps, 4, 4]
+    # r_z dims [num_samples, 4, 4]
     propagation_matrix = torch.matmul(r_z[None, :], r_xy[:, None])
-    # dims [num_b1s, num_samples, num_pulse steps, 4, 4]
+    # dims [num_b1s, num_samples, 4, 4]
     relaxation_matrix = matrix_propagation_relaxation_multidim(dt_s=dt_s, sim_data=sim_data)
     # dims [num_t1s, num_t2s, 4, 4]
-    return torch.matmul(propagation_matrix[None, None, :], relaxation_matrix[:, :, None, None, None])
+    # need dims [t1s, t2s, b1s, samples, 4, 4]
+    return torch.matmul(propagation_matrix[None, None, :], relaxation_matrix)
 
 
 def matrix_propagation_relaxation_multidim(dt_s: torch.tensor, sim_data: options.SimulationData) -> torch.tensor:
@@ -157,7 +166,8 @@ def matrix_propagation_relaxation_multidim(dt_s: torch.tensor, sim_data: options
     ])
     relax_matrix = torch.moveaxis(relax_matrix, -1, 0)
     relax_matrix = torch.moveaxis(relax_matrix, -1, 0)
-    return relax_matrix
+    # cast to b1 and num samples dim
+    return relax_matrix[:, :, None, None]
 
 
 def sample_acquisition(etl_idx: int, sim_params: options.SimulationParameters, sim_data: options.SimulationData,
@@ -166,7 +176,7 @@ def sample_acquisition(etl_idx: int, sim_params: options.SimulationParameters, s
     for acq_idx in range(sim_params.settings.acquisition_number):
         sim_data = propagate_matrix_mag_vector(acquisition_matrix_propagator, sim_data)
         # remember dims [t1s, t2s, b1s, sample, 4]
-        mag_data_cmplx = magnetization[:, :, :, :, 0] + 1j * magnetization[:, :, :, :, 1]
+        mag_data_cmplx = sim_data.magnetization_propagation[:, :, :, :, 0] + 1j * sim_data.magnetization_propagation[:, :, :, :, 1]
         # signal tensor [t1s, t2s, b1s, etl, acq_num]
         sim_data.signal_tensor[:, :, :, etl_idx, acq_idx] = torch.divide(
             torch.sum(mag_data_cmplx),

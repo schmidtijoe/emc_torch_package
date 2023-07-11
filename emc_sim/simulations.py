@@ -29,7 +29,7 @@ def mese(sim_params: options.SimulationParameters):
     logModule.debug(f"Start Simulation")
     t_start = time.time()
     plot_idx = 0
-    device = torch.device('cuda:0' if torch.cuda.is_available() else "cpu")
+    device = torch.device('cuda:1' if torch.cuda.is_available() else "cpu")
     logModule.debug(f"torch device: {device}")
     logModule.debug(f"setup simulation data")
     # set up sample and initial magnetization + data carry
@@ -44,23 +44,25 @@ def mese(sim_params: options.SimulationParameters):
     gp_excitation, gps_refocus, timing, acquisition = prep.prep_gradient_pulse_mese(
         sim_params=sim_params
     )
+    # set devices
+    gp_excitation.set_device(device)
+    timing.set_device(device)
+    for gp in gps_refocus:
+        gp.set_device(device)
+    acquisition.set_device(device)
 
     # --- starting sim matrix propagation --- #
-    logModule.debug("excitation")
-    gp_excitation.set_device(device)
+    logModule.debug("Calculate matrix propagators")
     mat_prop_exci = functions.propagate_gradient_pulse_relax(
         pulse_x=gp_excitation.data_pulse_x, pulse_y=gp_excitation.data_pulse_y, grad=gp_excitation.data_grad,
         sim_data=sim_data, dt_s=gp_excitation.dt_sampling_steps*1e-6
     )
 
-    fig = plotting.plot_running_mag(fig, sim_data, id=plot_idx)
-    plot_idx += 1
-
     # calculate matrices that are actually needed
     # first refocusing
     mat_prop_ref1_pre_time = functions.matrix_propagation_relaxation_multidim(
-            dt_s=timing.time_pre_pulse[0]*1e-6, sim_data=sim_data
-        )
+        dt_s=timing.time_pre_pulse[0]*1e-6, sim_data=sim_data
+    )
 
     mat_prop_ref1_pulse = functions.propagate_gradient_pulse_relax(
         pulse_x=gps_refocus[0].data_pulse_x, pulse_y=gps_refocus[0].data_pulse_y,
@@ -71,12 +73,15 @@ def mese(sim_params: options.SimulationParameters):
         dt_s=timing.time_post_pulse[0]*1e-6, sim_data=sim_data
     )
     # combined
-    mat_prop_ref_1 = torch.matmul(torch.matmul(mat_prop_ref1_pulse, mat_prop_ref1_pre_time), mat_prop_ref1_post_time)
+    mat_prop_ref_1 = torch.matmul(
+        torch.matmul(mat_prop_ref1_pulse, mat_prop_ref1_pre_time),
+        mat_prop_ref1_post_time
+    )
 
     # other refocusing
     mat_prop_ref_pre_time = functions.matrix_propagation_relaxation_multidim(
-            dt_s=timing.time_pre_pulse[1]*1e-6, sim_data=sim_data
-        )
+        dt_s=timing.time_pre_pulse[1]*1e-6, sim_data=sim_data
+    )
 
     mat_prop_ref_pulse = functions.propagate_gradient_pulse_relax(
         pulse_x=gps_refocus[1].data_pulse_x, pulse_y=gps_refocus[1].data_pulse_y,
@@ -87,7 +92,10 @@ def mese(sim_params: options.SimulationParameters):
         dt_s=timing.time_post_pulse[1]*1e-6, sim_data=sim_data
     )
     # combined
-    mat_prop_ref = torch.matmul(torch.matmul(mat_prop_ref_pulse, mat_prop_ref_pre_time), mat_prop_ref_post_time)
+    mat_prop_ref = torch.matmul(
+        torch.matmul(mat_prop_ref_pulse, mat_prop_ref_pre_time),
+        mat_prop_ref_post_time
+    )
 
     # acquisition steps
     mat_prop_acq_step = functions.propagate_gradient_pulse_relax(
@@ -95,11 +103,14 @@ def mese(sim_params: options.SimulationParameters):
         grad=acquisition.data_grad, dt_s=acquisition.dt_sampling_steps*1e-6,
         sim_data=sim_data)
 
-
     # propagate
     logModule.debug(f"start matrix propagation")
-    # init mag profile has dims [samples, 4] need to cast to dictionary entries, t1s t2s b1s
+    # init mag profile cast to shape already
     sim_data = functions.propagate_matrix_mag_vector(mat_prop_exci, sim_data)
+    # plot excitation profile
+    fig = plotting.plot_running_mag(fig, sim_data, id=plot_idx)
+    plot_idx += 1
+
     sim_data = functions.propagate_matrix_mag_vector(mat_prop_ref_1, sim_data)
     # read steps
     # acquisition
@@ -107,6 +118,9 @@ def mese(sim_params: options.SimulationParameters):
         etl_idx=0, sim_params=sim_params, sim_data=sim_data,
         acquisition_matrix_propagator=mat_prop_acq_step
     )
+
+    fig = plotting.plot_running_mag(fig, sim_data, id=plot_idx)
+    plot_idx += 1
 
     # after first read we can loop over rest with the same matrices,
     # since timing and pulses are equal in standard mese scheme
@@ -118,8 +132,11 @@ def mese(sim_params: options.SimulationParameters):
         # do acquisition steps
         sim_data = functions.sample_acquisition(
             etl_idx=loop_idx+1, sim_params=sim_params, sim_data=sim_data,
-            acquisition_matrix_propagator=acquisition
+            acquisition_matrix_propagator=mat_prop_acq_step
         )
+
+        fig = plotting.plot_running_mag(fig, sim_data, id=plot_idx)
+        plot_idx += 1
 
     logModule.debug('Signal array processing fourier')
     image_tensor = torch.fft.fftshift(
@@ -130,7 +147,7 @@ def mese(sim_params: options.SimulationParameters):
         ), dim=-1
     )
     sim_data.emc_signal_mag = 2 * torch.sum(torch.abs(image_tensor), dim=-1) / sim_params.settings.acquisition_number
-    sim_data.emc_signal_phase = 2 * torch.sum(torch.angle(image_tensor), dim=-11) / sim_params.settings.acquisition_number
+    sim_data.emc_signal_phase = 2 * torch.sum(torch.angle(image_tensor), dim=-1) / sim_params.settings.acquisition_number
 
     if sim_params.sequence.ETL % 2 > 0:
         # for some reason we get a shift from the fft when used with odd array length.
