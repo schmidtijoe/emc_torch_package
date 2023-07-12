@@ -131,7 +131,7 @@ class SimulationSettings(sp.Serializable):
     sample_number: int = 1000  # no of sampling points along slice profile
     length_z: float = 0.005  # [m] length extension of z-axis spanned by sample -> total length 2*lengthZ (-:+)
     acquisition_number: int = 50  # number of bins across slice sample -> effectively sets spatial resolution
-    # resolution = lengthZ / acquisitionNumber
+    # resolution = 2 * lengthZ / acquisitionNumber
 
     t1_list: typing.List = sp.field(default_factory=lambda: [1.5])  # T1 to simulate [s]
     t2_list: typing.List = sp.field(default_factory=lambda: [[25, 30, 0.5], [30, 35, 1]])  # T2 to simulate [ms]
@@ -143,6 +143,12 @@ class SimulationSettings(sp.Serializable):
         return [(t1, t2, b1) for t1 in self.t1_list
                 for t2 in self.t2_list for b1 in self.b1_list]
 
+    def get_slice_profile_bin_resolution(self):
+        return self.length_z * 2 / self.acquisition_number
+
+    def get_slice_profile_sample_resolution(self):
+        return self.length_z * 2 / self.sample_number
+
 
 @dataclass
 class SimulationParameters(sp.Serializable):
@@ -151,8 +157,15 @@ class SimulationParameters(sp.Serializable):
     settings: SimulationSettings = SimulationSettings()
 
     def __post_init__(self):
-        self.sequence.gradient_acquisition = - self.settings.acquisition_number * self.sequence.bw \
-                                             / (self.sequence.gamma_hz * 2 * self.settings.length_z) * 1000
+        logModule.info(f"spatial sampling resolution: {self.settings.get_slice_profile_sample_resolution()*1e6:.2f} um"
+                       f"(per spin isochromat)")
+        logModule.info(f"spatial readout binning resolution across slcie profile:"
+                       f"{self.settings.get_slice_profile_bin_resolution()*1e6:.2f} um (contributions to readout)")
+        # gradient area = deltaK * n = 1/FOV * num_acquisition
+        grad_area = 1 / (2 * self.settings.length_z) * self.settings.acquisition_number
+        # grad_area in 1/m -> / gamma for T/m
+        grad_amp = grad_area / self.sequence.gamma_hz / self.sequence.duration_acquisition * 1e6    # cast to s
+        self.sequence.gradient_acquisition = - grad_amp * 1e3   # cast to mT
 
     def set_acquisition_gradient(self):
         self.__post_init__()
@@ -306,8 +319,15 @@ class SimulationData:
         # allocate
         # set emc data tensor -> dims: [t1s, t2s, b1s, ETL]
         # (we get this in the end by calculation, no need to allocate for it and carry it through)
-        emc_signal_mag = torch.zeros(0, device=device)
-        emc_signal_phase = torch.zeros(0, device=device)
+        emc_signal_mag = torch.zeros(
+            (t1_vals.shape[0], t2_vals.shape[0], b1_vals.shape[0],
+            sim_params.sequence.ETL),
+            device=device
+        )
+        emc_signal_phase = torch.zeros(
+            (t1_vals.shape[0], t2_vals.shape[0], b1_vals.shape[0],
+             sim_params.sequence.ETL),
+            device=device)
         instance = cls(
             t1_vals=t1_vals, t2_vals=t2_vals, b1_vals=b1_vals,
             emc_signal_mag=emc_signal_mag, emc_signal_phase=emc_signal_phase,
