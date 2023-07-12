@@ -23,6 +23,7 @@ class ConfigOptimization(sp.Serializable):
     random_seed: int = sp.field(alias=["-ors"], default=0)
     num_steps: int = sp.field(alias=["-ons"], default=100)
     base_cos_scale: float = sp.field(alias=["-bcs"], default=0.5)
+    init_type: int = 1      # 0 rnd, and then cos # lobes
 
     def set_name(self):
         self.optim_save_path = plib.Path(self.optim_save_path).absolute()

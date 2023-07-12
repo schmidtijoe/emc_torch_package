@@ -17,66 +17,19 @@ import wandb
 logModule = logging.getLogger(__name__)
 
 
-# loss function
-def loss_pulse_optim(tmp_magnetization: torch.tensor,
-                     target_profile: torch.tensor,
-                     p_x: torch.tensor, p_y: torch.tensor, g: torch.tensor, g_re: torch.tensor,
-                     lam_shape: float = 1e3,
-                     lam_power: float = 1e-1, lam_grad: float = 1, lam_smooth: float = 10, lam_ramps: float = 1e-3):
-    # magnetization is tensor [n_t2, n_b1, n_samples, 4]
-    # target is tensor [n_samples, 4]
-    # want individual b1 profiles to match target as closely as possible
-
-    while tmp_magnetization.shape.__len__() > 3:
-        tmp_magnetization = torch.mean(tmp_magnetization, dim=0)
-    # calculate error - want to get MSE loss across all slice profiles - magnitude, phase and z (b1 in first dim)
-    # and then sum
-    # ToDo: Emphasize shape in loss function!
-    shape_err = 10 * (torch.sum(torch.nn.MSELoss()(
-        torch.norm(tmp_magnetization[:, :, :2], dim=-1), target_profile[0]
-    ))) + torch.sum(torch.nn.MSELoss()(tmp_magnetization[:, :, 2], target_z)) + \
-                torch.sum(torch.nn.MSELoss()(torch.angle(tmp_magnetization[:, :, 0] + 1j * tmp_magnetization[:, :, 1]),
-                                             target_phase))
-    # try to make all O(0) order then using the lambdas is much more straight forward
-    # want to enforce boundaries
-    # make pulse abs power low
-    power_err = torch.sum(p_x ** 2 + p_y ** 2) / p_x.shape[0] * 1e7
-
-    # make gradient amplitude low
-    grad_amp_err = (torch.sum(g ** 2) + torch.sum(g_re ** 2)) * 1e-7
-    # enforce smootheness - operate along the pulse dimension
-    # ToDo: emphasize pulse smoothness over grad!
-    p_g = torch.sum(torch.abs(torch.gradient(p_x, dim=-1)[0])) + torch.sum(torch.abs(torch.gradient(p_y, dim=-1)[0]))
-    g_g = torch.sum(torch.abs(torch.gradient(g)[0])) + torch.sum(torch.abs(torch.gradient(g_re)[0]))
-    smootheness_err = p_g * 1e3 + g_g * 1e-2
-
-    # enforce easy ramps
-    ramps_p = 1e8 * (torch.sum(p_x[:, 0] ** 2 + p_x[:, -1] ** 2 + p_y[:, 0] ** 2 + p_y[:, -1] ** 2))
-    ramps_g = 1e-3 * (g[0] + g[-1] + g_re[0] + g_re[-1]) ** 2
-    ramp_err = ramps_p + ramps_g
-
-    loss = lam_shape * shape_err + lam_power * power_err + lam_grad * grad_amp_err + lam_smooth * smootheness_err + lam_ramps * ramp_err
-    return loss, shape_err, power_err, grad_amp_err, smootheness_err, ramp_err
-
-
 def func_to_calculate(pulse_x: torch.tensor, pulse_y: torch.tensor,
                       grad: torch.tensor, grad_rephase: torch.tensor,
-                      sim_data: eso.SimulationData, dt_s: float,
-                      target_profile: torch.tensor):
+                      sim_data: eso.SimulationData, dt_s: float):
     # pulse gradient propagation
-    matrix_propagation_pulse = functions.propagate_gradient_pulse_relax(
+    sim_data = functions.propagate_gradient_pulse_relax(
         sim_data=sim_data, pulse_x=pulse_x, pulse_y=pulse_y, grad=grad,
         dt_s=dt_s)
     # rephasing propagation
-    matrix_propagation_rephase = functions.propagate_gradient_pulse_relax(
+    sim_data = functions.propagate_gradient_pulse_relax(
         pulse_x=torch.zeros((pulse_x.shape[0], grad_rephase.shape[0])).to(sim_data.device),
         pulse_y=torch.zeros((pulse_x.shape[0], grad_rephase.shape[0])).to(sim_data.device), grad=grad_rephase,
         dt_s=dt_s * 10, sim_data=sim_data
     )
-    # propagate pulse matrix
-    sim_data = functions.propagate_matrix_mag_vector(matrix_propagation_pulse, sim_data)
-    # propagate rephase matrix
-    sim_data = functions.propagate_matrix_mag_vector(matrix_propagation_rephase, sim_data)
     return sim_data
 
 
@@ -100,10 +53,12 @@ def configure(sim_params: eso.SimulationParameters, optim_config: options.Config
     return sim_params, optim_config, device
 
 
-def set_init_tensors(sim_params: eso.SimulationParameters, device: torch.device, base_cos_scale: float = 0.5):
+def set_init_tensors(sim_params: eso.SimulationParameters, device: torch.device, optim_config: options.ConfigOptimization,
+                     require_grad_p_g: bool = True):
     # set pulse original
     grad_pulse = prep.GradPulse.prep_single_grad_pulse(
-        params=sim_params, excitation_flag=True, grad_rephase_factor=0.0)
+        params=sim_params, excitation_flag=True, grad_rephase_factor=0.0
+    )
     # get initial magnetization
     sim_data = eso.SimulationData.from_sim_parameters(sim_params=sim_params, device=device)
     initial_magnetization = sim_data.magnetization_propagation
@@ -119,7 +74,7 @@ def set_init_tensors(sim_params: eso.SimulationParameters, device: torch.device,
     # define target shapes for magnetization values (magnitude phase and z) , after including rephasing
     # dim [mag, phase, z]
     target_shape = torch.zeros((3, n_b1s, sample_axis.shape[0])).to(device)
-    # want step function in magnitude x direction
+    # want step function in magnitude x direction with ramp
     target_shape[0, :, torch.abs(sample_axis) < 1e-3 * slice_thickness / 2] = 1.0
     # want flat phase ie nothing to do for dim 1
     # want "anti" step functions in z direction but from initial magnetization
@@ -136,15 +91,20 @@ def set_init_tensors(sim_params: eso.SimulationParameters, device: torch.device,
     # -> y: random sampled between 0 and 1, range (-1, 1)
     # range ensured by tanh activation
     # make sine shape below as guide
-    ax_range = torch.linspace(-torch.pi / 2, torch.pi / 2, grad_pulse.data_pulse_x.shape[1])
-    p0 = torch.cos(ax_range) * base_cos_scale + \
-         (torch.rand(size=(grad_pulse.data_pulse_x.shape[1],)) - 0.5) * (1 - base_cos_scale)
-    px = torch.tensor(p0, requires_grad=True, device=device)
-    p0 = torch.rand(size=(grad_pulse.data_pulse_y.shape[1],)) - 0.5
-    py = torch.tensor(p0, requires_grad=True, device=device)
+    if optim_config.init_type == 0:
+        p_a = torch.rand(size=(grad_pulse.data_pulse_x.shape[1],)) - 0.5
+    else:
+        ax_range = torch.linspace(-torch.pi / 2 * optim_config.init_type, torch.pi / 2 * optim_config.init_type,
+                                  grad_pulse.data_pulse_x.shape[1])
+        p_a = torch.cos(ax_range)
+    p0 = p_a * optim_config.base_cos_scale + \
+         (torch.rand(size=(grad_pulse.data_pulse_x.shape[1],)) - 0.5) * (1 - optim_config.base_cos_scale)
+    px = torch.tensor(p0, requires_grad=require_grad_p_g, device=device)
+    # p0 = torch.rand(size=(grad_pulse.data_pulse_y.shape[1],)) - 0.5
+    py = torch.zeros(size=(grad_pulse.data_pulse_y.shape[1],), requires_grad=require_grad_p_g, device=device)
     # grads -> want to enforce g to range(0,1) and gr (0, -1), by sigmoid, init with random samples from 0 to 1
-    g = torch.rand(size=(int(grad_pulse.data_grad.shape[0] / 10),), requires_grad=True, device=device)
-    g_re = torch.rand(size=(50,), requires_grad=True, device=device)
+    g = torch.rand(size=(int(grad_pulse.data_grad.shape[0] / 10),), requires_grad=require_grad_p_g, device=device)
+    g_re = torch.rand(size=(50,), requires_grad=require_grad_p_g, device=device)
 
     return px, py, p_max, g, g_re, g_max, target_shape, dt_s
 
@@ -156,7 +116,7 @@ def optimize(sim_params: eso.SimulationParameters, optim_config: options.ConfigO
 
     # configure tensors, target, initial guesses etc.
     px, py, p_max, g, g_re, g_max, target_shape, dt_s = set_init_tensors(
-        sim_params=sim_params, device=device, base_cos_scale=optim_config.base_cos_scale
+        sim_params=sim_params, device=device, optim_config=optim_config
     )
 
     # set optimizer
@@ -181,8 +141,7 @@ def optimize(sim_params: eso.SimulationParameters, optim_config: options.ConfigO
 
             sim_data = func_to_calculate(
                 pulse_x=px_input, pulse_y=py_input, grad=g_input, grad_rephase=gr_input,
-                sim_data=sim_data, dt_s=dt_s,
-                target_profile=target_shape
+                sim_data=sim_data, dt_s=dt_s
             )
 
             loss.calculate_loss(

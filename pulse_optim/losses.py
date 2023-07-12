@@ -27,12 +27,11 @@ class ShapeLoss(Loss):
             input_tensor = torch.mean(input_tensor, dim=0)
         # calculate error - want to get MSE loss across all slice profiles - magnitude, phase and z (b1 in first dim)
         # and then sum
-        # ToDo: Emphasize shape in loss function!
-        self.value = 10 * (torch.sum(torch.nn.MSELoss()(torch.norm(input_tensor[:, :, :2], dim=-1), target_mag))) + \
-                     torch.sum(torch.nn.MSELoss()(input_tensor[:, :, 2], target_z)) + \
-                     torch.sum(
-                         torch.nn.MSELoss()(torch.angle(input_tensor[:, :, 0] + 1j * input_tensor[:, :, 1]),
-                                            target_phase))
+        input_mag = torch.norm(input_tensor[:, :, :2], dim=-1)
+        input_phase = torch.angle(input_tensor[:, :, 0] + 1j * input_tensor[:, :, 1])[input_mag > 1e-3]
+        self.value = 20 * (torch.sum(torch.nn.MSELoss()(input_mag, target_mag))) + \
+                     10 * torch.sum(torch.nn.MSELoss()(input_tensor[:, :, 2], target_z)) + \
+                     torch.sum(torch.nn.MSELoss()(input_phase, target_phase[input_mag > 1e-3]))
 
 
 class SmoothenessLoss(Loss):
