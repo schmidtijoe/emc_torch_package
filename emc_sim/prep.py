@@ -235,7 +235,9 @@ class GradPulse:
         # read file
         # get duration & grad pulse defaults
         gp_details = GPDetails.get_gp_details(params=params, excitation_flag=excitation_flag)
-        gp_details.grad_crush_rephase = torch.zeros(1)
+        gp_details.grad_crush_rephase *= grad_rephase_factor
+        if grad_rephase_factor < 1e-3:
+            gp_details.duration_crush_rephase = 0.0
 
         path = plib.Path(params.config.path_to_rfpf).absolute().joinpath(params.config.rfpf_excitation)
 
@@ -256,24 +258,6 @@ class GradPulse:
             excitation=True)
 
         # build verse pulse gradient
-        grad, pulse, duration, area_grad = cls.build_pulse_grad_shapes(
-            gp_details=gp_details,
-            pulse=pulse_from_rfpf,
-            duration_pre=0.0,
-            grad_amp_pre=0.0
-        )
-
-        # When exciting with a slice selective gradient the gradient creates phase offset along the slice axis.
-        # We want to rephase this phase offset (as is the original use of the gradient in the acquisition scheme).
-        # However, the rephasing gradient is usually used with half the gradient moment area (at 90° pulses), which
-        # is not quite accurate.
-        # After investigation a manual correction term can be put in here for accuracy * 1.038
-        gradient_excitation_phase_rewind = - torch.nan_to_num(area_grad / (
-                grad_rephase_factor * 2 * params.sequence.duration_excitation_rephase), posinf=0.0)
-
-        # The gradient pulse scheme needs to be re-done with accommodating those changes in the rephase gradient of
-        # the excitation
-        gp_details.grad_crush_rephase = gradient_excitation_phase_rewind.clone().detach()
         grad, pulse, duration, area_grad = cls.build_pulse_grad_shapes(
             gp_details=gp_details,
             pulse=pulse_from_rfpf,

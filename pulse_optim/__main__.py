@@ -28,7 +28,7 @@ def func_to_calculate(pulse_x: torch.tensor, pulse_y: torch.tensor,
     sim_data = functions.propagate_gradient_pulse_relax(
         pulse_x=torch.zeros((pulse_x.shape[0], grad_rephase.shape[0])).to(sim_data.device),
         pulse_y=torch.zeros((pulse_x.shape[0], grad_rephase.shape[0])).to(sim_data.device), grad=grad_rephase,
-        dt_s=dt_s * 10, sim_data=sim_data
+        dt_s=10*1e-6, sim_data=sim_data
     )
     return sim_data
 
@@ -103,10 +103,13 @@ def set_init_tensors(sim_params: eso.SimulationParameters, device: torch.device,
     # p0 = torch.rand(size=(grad_pulse.data_pulse_y.shape[1],)) - 0.5
     py = torch.zeros(size=(grad_pulse.data_pulse_y.shape[1],), requires_grad=require_grad_p_g, device=device)
     # grads -> want to enforce g to range(0,1) and gr (0, -1), by sigmoid, init with random samples from 0 to 1
-    g = torch.rand(size=(int(grad_pulse.data_grad.shape[0] / 10),), requires_grad=require_grad_p_g, device=device)
+    # want to set on gradient raster = 10 us
+    grad_raster_factor = dt_s * 1e6 / 10
+    g = torch.rand(size=(int(grad_pulse.data_grad.shape[0] * grad_raster_factor),), requires_grad=require_grad_p_g, device=device)
+    # rephasing gradient on different raster time: 10 us, instead of 5, take it to be 500 us long
     g_re = torch.rand(size=(50,), requires_grad=require_grad_p_g, device=device)
 
-    return px, py, p_max, g, g_re, g_max, target_shape, dt_s
+    return px, py, p_max, g, g_re, g_max, target_shape, dt_s, grad_raster_factor
 
 
 def optimize(sim_params: eso.SimulationParameters, optim_config: options.ConfigOptimization):
@@ -115,7 +118,7 @@ def optimize(sim_params: eso.SimulationParameters, optim_config: options.ConfigO
     sim_params, optim_config, device = configure(sim_params=sim_params, optim_config=optim_config)
 
     # configure tensors, target, initial guesses etc.
-    px, py, p_max, g, g_re, g_max, target_shape, dt_s = set_init_tensors(
+    px, py, p_max, g, g_re, g_max, target_shape, dt_s, dt_g_p_factor = set_init_tensors(
         sim_params=sim_params, device=device, optim_config=optim_config
     )
 
@@ -136,7 +139,7 @@ def optimize(sim_params: eso.SimulationParameters, optim_config: options.ConfigO
             optimizer.zero_grad()
             # set input
             px_input, py_input, g_input, gr_input = build_input_tensors(
-                px, py, g, g_re, p_max, g_max, sim_data
+                px, py, g, g_re, p_max, g_max, sim_data, grad_raster_factor=int(1/dt_g_p_factor)
             )
 
             sim_data = func_to_calculate(
@@ -179,11 +182,11 @@ def optimize(sim_params: eso.SimulationParameters, optim_config: options.ConfigO
         torch.save(tensors[k], optim_config.optim_save_path.with_name(file_names[k]).with_suffix(".pt").as_posix())
 
 
-def build_input_tensors(px, py, g, g_re, p_max, g_max, sim_data):
+def build_input_tensors(px, py, g, g_re, p_max, g_max, sim_data, grad_raster_factor: int = 2):
     # we want our targets range from 0 to 1,
     # but obeye input ranges, i.e. abs(gradient) < value, abs(rf_power) < value
     # hence we take the Tanh function to map the input to -1 to 1 range within our max values
-    g_input = -g_max * torch.nn.Sigmoid()(g.repeat_interleave(10))
+    g_input = -g_max * torch.nn.Sigmoid()(g.repeat_interleave(grad_raster_factor))
     gr_input = g_max * torch.nn.Sigmoid()(g_re)  # sampled on different raster!! (dt * 10),
     px_input = p_max * torch.nn.Tanh()(px)[None, :] * sim_data.b1_vals[:, None]
     py_input = p_max * torch.nn.Tanh()(py)[None, :] * sim_data.b1_vals[:, None]
@@ -201,12 +204,11 @@ def main():
         level = logging.DEBUG
     else:
         level = logging.INFO
+        # setup wandb
+        wandb.init()
 
     logging.basicConfig(format='%(asctime)s %(levelname)s :: %(name)s --  %(message)s',
                         datefmt='%I:%M:%S', level=level)
-
-    # setup wandb
-    wandb.init()
 
     try:
         optimize(sim_params=sim_params, optim_config=optim_config)
