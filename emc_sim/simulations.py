@@ -235,18 +235,17 @@ def single_pulse(sim_params: options.SimulationParameters):
     grad_pulse_data.set_device(device)
 
     plot_idx = 0
-    fig = plotting.prep_plot_running_mag(2, 1)
+    fig = plotting.prep_plot_running_mag(2, 1, 0.05, 1.0)
     # excite only
     fig = plotting.plot_running_mag(fig, sim_data=sim_data, id=plot_idx)
     plot_idx += 1
 
     # --- starting sim matrix propagation --- #
     logModule.debug("excitation")
-    prop_mat_pulse = functions.propagate_gradient_pulse_relax(
+    sim_data = functions.propagate_gradient_pulse_relax(
         grad=grad_pulse_data.data_grad, pulse_x=grad_pulse_data.data_pulse_x,
         pulse_y=grad_pulse_data.data_pulse_y, dt_s=grad_pulse_data.dt_sampling_steps*1e-6, sim_data=sim_data)
 
-    sim_data = functions.propagate_matrix_mag_vector(prop_mat_pulse, sim_data)
     fig = plotting.plot_running_mag(fig, sim_data, id=plot_idx)
     plot_idx += 1
     plotting.display_running_plot(fig)

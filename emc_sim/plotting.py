@@ -182,4 +182,4 @@ def plot_running_mag(fig: go.Figure, sim_data: options.SimulationData, id: int, 
 
 
 def display_running_plot(fig):
-    fig.write_html(f'./tests/grad_pulse_propagation.html')
+    fig.write_html(f'./tests/grad_pulse_propagation_5us.html')

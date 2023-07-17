@@ -1,4 +1,5 @@
 from emc_sim import options, simulations
+from emc_db import DB
 import logging
 
 
@@ -19,7 +20,10 @@ def main():
         # simulate
         # simulations.single_pulse(sim_params=sim_params)
         sim_data, sim_params = simulations.mese(sim_params=sim_params)
-        # plot simulation
+        db = DB.build_from_sim_data(sim_params=sim_params, sim_data=sim_data)
+        # plot db curves
+        db.plot()
+        # plot s\imulation
         # plotting.plot_emc(sim_data)
         # save db
 
