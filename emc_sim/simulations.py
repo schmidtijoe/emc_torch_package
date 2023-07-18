@@ -170,8 +170,8 @@ def mese_optim(sim_params: options.SimulationParameters, sim_data: options.Simul
         sim_data = functions.propagate_matrix_mag_vector(m_p_pre, sim_data=sim_data)
 
         # pulse
-        px = gp_refocusing[loop_idx].data_pulse_x * fa_input[loop_idx] / 180.0
-        py = gp_refocusing[loop_idx].data_pulse_y * fa_input[loop_idx] / 180.0
+        px = gp_refocusing[loop_idx].data_pulse_x * fa_input[loop_idx]
+        py = gp_refocusing[loop_idx].data_pulse_y * fa_input[loop_idx]
         sim_data = functions.propagate_gradient_pulse_relax(
             pulse_x=px, pulse_y=py,
             grad=gp_refocusing[loop_idx].data_grad, sim_data=sim_data,

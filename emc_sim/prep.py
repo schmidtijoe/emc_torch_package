@@ -103,7 +103,6 @@ class GradPulse:
         rf = rfpf.RF.load(gp_details.rfpf_path)
 
         if abs(rf.duration_in_us - gp_details.duration_pulse) > 1e-5:
-            # resample pulse
             rf.resample_to_duration(duration_in_us=int(gp_details.duration_pulse))
         pulse = torch.from_numpy(rf.amplitude) * torch.exp(torch.from_numpy(1j * rf.phase))
 
