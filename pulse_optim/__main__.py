@@ -28,7 +28,7 @@ def func_to_calculate(pulse_x: torch.tensor, pulse_y: torch.tensor,
     sim_data = functions.propagate_gradient_pulse_relax(
         pulse_x=torch.zeros((pulse_x.shape[0], grad_rephase.shape[0])).to(sim_data.device),
         pulse_y=torch.zeros((pulse_x.shape[0], grad_rephase.shape[0])).to(sim_data.device), grad=grad_rephase,
-        dt_s=10*1e-6, sim_data=sim_data
+        dt_s=10 * 1e-6, sim_data=sim_data
     )
     return sim_data
 
@@ -53,7 +53,8 @@ def configure(sim_params: eso.SimulationParameters, optim_config: options.Config
     return sim_params, optim_config, device
 
 
-def set_init_tensors(sim_params: eso.SimulationParameters, device: torch.device, optim_config: options.ConfigOptimization,
+def set_init_tensors(sim_params: eso.SimulationParameters, device: torch.device,
+                     optim_config: options.ConfigOptimization,
                      require_grad_p_g: bool = True):
     # set pulse original
     grad_pulse = prep.GradPulse.prep_single_grad_pulse(
@@ -91,21 +92,30 @@ def set_init_tensors(sim_params: eso.SimulationParameters, device: torch.device,
     # -> y: random sampled between 0 and 1, range (-1, 1)
     # range ensured by tanh activation
     # make sine shape below as guide
-    if optim_config.init_type == 0:
-        p_a = torch.rand(size=(grad_pulse.data_pulse_x.shape[1],)) - 0.5
-    else:
-        ax_range = torch.linspace(-torch.pi / 2 * optim_config.init_type, torch.pi / 2 * optim_config.init_type,
+    p_rng = torch.rand(size=(grad_pulse.data_pulse_x.shape[1],)) - 0.5
+    p_shape = torch.zeros(size=(grad_pulse.data_pulse_x.shape[1],))
+    if optim_config.init_type == "gauss":
+        ax_range = torch.linspace(- 0.5 - optim_config.init_shape, 0.5 + optim_config.init_shape,
                                   grad_pulse.data_pulse_x.shape[1])
-        p_a = torch.cos(ax_range)
-    p0 = p_a * optim_config.base_cos_scale + \
-         (torch.rand(size=(grad_pulse.data_pulse_x.shape[1],)) - 0.5) * (1 - optim_config.base_cos_scale)
+        p_shape = 1 / torch.sqrt(torch.tensor([2]) * torch.pi) * torch.exp(-0.5 * ax_range ** 2)
+    elif optim_config.init_type == "cos" or optim_config.init_type == "sin":
+        ax_range = torch.linspace(-torch.pi / 2 * optim_config.init_shape, torch.pi / 2 * optim_config.init_shape,
+                                  grad_pulse.data_pulse_x.shape[1])
+        p_shape = torch.cos(ax_range)
+    elif optim_config.init_type == "sinc":
+        ax_range = torch.linspace(-torch.pi / 2 * (1 + optim_config.init_shape),
+                                  torch.pi / 2 * (1 + optim_config.init_shape),
+                                  grad_pulse.data_pulse_x.shape[1])
+        p_shape = torch.sinc(ax_range)
+    p0 = p_shape * optim_config.random_init_weight + p_rng * (1 - optim_config.random_init_weight)
     px = torch.tensor(p0, requires_grad=require_grad_p_g, device=device)
     # p0 = torch.rand(size=(grad_pulse.data_pulse_y.shape[1],)) - 0.5
     py = torch.zeros(size=(grad_pulse.data_pulse_y.shape[1],), requires_grad=require_grad_p_g, device=device)
     # grads -> want to enforce g to range(0,1) and gr (0, -1), by sigmoid, init with random samples from 0 to 1
     # want to set on gradient raster = 10 us
     grad_raster_factor = dt_s * 1e6 / 10
-    g = torch.rand(size=(int(grad_pulse.data_grad.shape[0] * grad_raster_factor),), requires_grad=require_grad_p_g, device=device)
+    g = torch.rand(size=(int(grad_pulse.data_grad.shape[0] * grad_raster_factor),),
+                          requires_grad=require_grad_p_g, device=device)
     # rephasing gradient on different raster time: 10 us, instead of 5, take it to be 500 us long
     g_re = torch.rand(size=(50,), requires_grad=require_grad_p_g, device=device)
 
@@ -139,7 +149,7 @@ def optimize(sim_params: eso.SimulationParameters, optim_config: options.ConfigO
             optimizer.zero_grad()
             # set input
             px_input, py_input, g_input, gr_input = build_input_tensors(
-                px, py, g, g_re, p_max, g_max, sim_data, grad_raster_factor=int(1/dt_g_p_factor)
+                px, py, g, g_re, p_max, g_max, sim_data, grad_raster_factor=int(1 / dt_g_p_factor)
             )
 
             sim_data = func_to_calculate(
@@ -160,7 +170,8 @@ def optimize(sim_params: eso.SimulationParameters, optim_config: options.ConfigO
                                                     "power": torch.sum(torch.sqrt(px ** 2 + py ** 2)).item(),
                                                     "g max": torch.max(torch.abs(g)).item()}))
 
-    plotting.plot_grad_pulse_optim_run(i, px_input, py_input, g_input, gr_input, config=optim_config)
+    plotting.plot_grad_pulse_optim_run(i, px_input, py_input, g_input, gr_input,
+                                       config=optim_config, dt_us=dt_s)
     plotting.plot_mag_prop(sim_data=sim_data,
                            target_profile=target_shape,
                            run=i, config=optim_config)
@@ -186,8 +197,8 @@ def build_input_tensors(px, py, g, g_re, p_max, g_max, sim_data, grad_raster_fac
     # we want our targets range from 0 to 1,
     # but obeye input ranges, i.e. abs(gradient) < value, abs(rf_power) < value
     # hence we take the Tanh function to map the input to -1 to 1 range within our max values
-    g_input = -g_max * torch.nn.Sigmoid()(g.repeat_interleave(grad_raster_factor))
-    gr_input = g_max * torch.nn.Sigmoid()(g_re)  # sampled on different raster!! (dt * 10),
+    g_input = -g_max * torch.nn.Tanh()(g.repeat_interleave(grad_raster_factor))
+    gr_input = g_max * torch.nn.Tanh()(g_re)  # sampled on different raster!! (dt * 10),
     px_input = p_max * torch.nn.Tanh()(px)[None, :] * sim_data.b1_vals[:, None]
     py_input = p_max * torch.nn.Tanh()(py)[None, :] * sim_data.b1_vals[:, None]
     return px_input, py_input, g_input, gr_input

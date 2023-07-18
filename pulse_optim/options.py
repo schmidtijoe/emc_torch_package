@@ -22,8 +22,9 @@ class ConfigOptimization(sp.Serializable):
     momentum: float = sp.field(alias=["-om"], default=0.5)
     random_seed: int = sp.field(alias=["-ors"], default=0)
     num_steps: int = sp.field(alias=["-ons"], default=100)
-    base_cos_scale: float = sp.field(alias=["-bcs"], default=0.5)
-    init_type: int = 1      # 0 rnd, and then cos # lobes
+    random_init_weight: float = sp.field(alias=["-riw"], default=0.5)
+    init_shape: int = 1      # 0 rnd, higher -> more side lobes in shape
+    init_type: str = "gauss"    # available init shapes -> gauss cos/sine sync
 
     def set_name(self):
         self.optim_save_path = plib.Path(self.optim_save_path).absolute()

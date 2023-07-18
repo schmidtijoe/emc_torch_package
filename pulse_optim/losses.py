@@ -75,15 +75,13 @@ class LossOptimizer:
         # smootheness
         self.smootheness_loss = SmoothenessLoss()
         # pulse
-        self.smootheness_loss_px = SmoothenessLoss(name="PX", emphasis=lambda_smootheness_p)
-        self.smootheness_loss_py = SmoothenessLoss(name="PY", emphasis=lambda_smootheness_p)
+        self.smootheness_loss_p = SmoothenessLoss(name="P", emphasis=lambda_smootheness_p)
         # gradients
         self.smootheness_loss_g = SmoothenessLoss(name="G", emphasis=lambda_smootheness_g)
-        self.smootheness_loss_gr = SmoothenessLoss(name="GR", emphasis=lambda_smootheness_g)
         # ramps
         self.ramp_loss = RampLoss()
         # pulse
-        self.ramp_loss_px = RampLoss(name="PX", emphasis=lambda_ramp_p)
+        self.ramp_loss_px = RampLoss(name="P", emphasis=lambda_ramp_p)
         self.ramp_loss_py = RampLoss(name="PY", emphasis=lambda_ramp_p)
         # gradients
         self.ramp_loss_g = RampLoss(name="G", emphasis=lambda_ramp_g)
@@ -102,8 +100,8 @@ class LossOptimizer:
             "loss": self.value,
             self.shape_loss.name: self.shape_loss.value,
             self.smootheness_loss.name: self.smootheness_loss.value,
-            "smootheness_loss_p": self.smootheness_loss_px.value + self.smootheness_loss_py.value,
-            "smootheness_loss_g": self.smootheness_loss_g.value + self.smootheness_loss_gr.value,
+            "smootheness_loss_p": self.smootheness_loss_p.value,
+            "smootheness_loss_g": self.smootheness_loss_g.value,
             "ramp_loss_p": self.ramp_loss_px.value + self.ramp_loss_py.value,
             "ramp_loss_g": self.ramp_loss_g.value + self.ramp_loss_gr.value,
             "amp_loss_p": self.amp_loss_px.value + self.amp_loss_py.value,
@@ -115,13 +113,12 @@ class LossOptimizer:
         return self.value
 
     def calculate_smootheness_loss(self, p_x, p_y, g, g_r):
-        self.smootheness_loss_px.calculate(p_x, p_x)
-        self.smootheness_loss_py.calculate(p_y, p_y)
-        self.smootheness_loss_g.calculate(g, g)
-        self.smootheness_loss_gr.calculate(g_r, g_r)
+        p = torch.concat((p_x, p_y), dim=1)
+        g_concat = torch.concat((g, g_r), dim=0)
+        self.smootheness_loss_p.calculate(p, p)
+        self.smootheness_loss_g.calculate(g_concat, g_concat)
         # combined
-        self.smootheness_loss.value = self.smootheness_loss_px.get_loss() + self.smootheness_loss_py.get_loss()
-        self.smootheness_loss.value += self.smootheness_loss_g.get_loss() + self.smootheness_loss_gr.get_loss()
+        self.smootheness_loss.value = self.smootheness_loss_p.get_loss() + self.smootheness_loss_g.get_loss()
 
     def calculate_ramp_loss(self, p_x, p_y, g, g_r):
         self.ramp_loss_px.calculate(p_x, p_x)

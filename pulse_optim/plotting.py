@@ -64,22 +64,23 @@ def plot_mag_prop(sim_data: eso.SimulationData,
         )
     # append to filename
     stem = config.optim_save_path.stem
-    filename = config.optim_save_path.with_name(f"{stem}_mag_profile_{run}")
+    filename = config.optim_save_path.with_name(f"{stem}_{config.init_shape}_{config.init_type}_mag_profile_{run}")
     fig.write_html(filename.with_suffix(".html").as_posix())
 
 
 def plot_grad_pulse_optim_run(run: int, px: torch.tensor, py: torch.tensor, g: torch.tensor, gr: torch.tensor,
-                              config: options.ConfigOptimization):
+                              config: options.ConfigOptimization, dt_us: torch.tensor):
     pick_b1 = int(px.shape[0] / 2)
-    shape_plot = px.shape[1] + 10 * gr.shape[0]
+    delta_t_pg = int(dt_us * px.shape[1])
+    shape_plot = delta_t_pg + 10 * gr.shape[0]
     g_plot = torch.zeros(shape_plot)
-    g_plot[:px.shape[1]] = g.clone().detach().cpu()
-    g_plot[px.shape[1]:] = gr.clone().detach().cpu().repeat_interleave(10)
+    g_plot[:delta_t_pg] = g.clone().detach().cpu().repeat_interleave(int(dt_us.item()))
+    g_plot[delta_t_pg:] = gr.clone().detach().cpu().repeat_interleave(10)
 
     px_plot = torch.zeros(shape_plot)
-    px_plot[:px.shape[1]] = px[pick_b1].clone().detach().cpu()
+    px_plot[:delta_t_pg] = px[pick_b1].clone().detach().cpu().repeat_interleave(int(dt_us.item()))
     py_plot = torch.zeros(shape_plot)
-    py_plot[:px.shape[1]] = py[pick_b1].clone().detach().cpu()
+    py_plot[:delta_t_pg] = py[pick_b1].clone().detach().cpu().repeat_interleave(int(dt_us.item()))
 
     x_axis = torch.arange(shape_plot)
     fig = psub.make_subplots(2, 1)
@@ -101,5 +102,6 @@ def plot_grad_pulse_optim_run(run: int, px: torch.tensor, py: torch.tensor, g: t
     )
     # append to filename
     stem = config.optim_save_path.stem
-    filename = config.optim_save_path.with_name(f"{stem}_optim_grad_pulse_step-{run}")
+    filename = config.optim_save_path.with_name(f"{stem}_{config.init_shape}_{config.init_type}_"
+                                                f"optim_grad_pulse_step-{run}")
     fig.write_html(filename.with_suffix(".html").as_posix())
