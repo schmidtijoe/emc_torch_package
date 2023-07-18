@@ -43,13 +43,13 @@ def configure(sim_params: eso.SimulationParameters, optim_config: poo.ConfigOpti
 def build_input_tensors(pulse_fa: torch.tensor):
     # want the ETL length optimizing params to be between 0 and 1
     # and enforce bounds here
-    fa_bounds = torch.tensor([100.0, 180.0])
+    # fa_bounds = torch.tensor([100.0, 180.0])
     # use sigmoid to map to between 0 and 1
-    mapped_pulse_fa = torch.nn.Sigmoid()(pulse_fa)
+    # mapped_pulse_fa = torch.nn.Sigmoid()(pulse_fa)
     # add lower bound and scale with range
-    mapped_pulse_fa *= torch.gradient(fa_bounds)[0][0]
-    mapped_pulse_fa += fa_bounds[0]
-    return mapped_pulse_fa
+    # mapped_pulse_fa *= torch.gradient(fa_bounds)[0][0]
+    # mapped_pulse_fa += fa_bounds[0]
+    return torch.nn.Sigmoid()(pulse_fa)
 
 
 def main(sim_params: eso.SimulationParameters, optim_config: poo.ConfigOptimization):
@@ -66,14 +66,17 @@ def main(sim_params: eso.SimulationParameters, optim_config: poo.ConfigOptimizat
         gp.set_device(device)
     acquisition.set_device(device)
 
-    # need to set initial values
+    # need to set initial values - take fa to be between 0 and 1. map it with a sigmoid to ensure bounds.
+    # 1 is 180 degrees
     fa = torch.ones((sim_params.sequence.ETL,), device=device, requires_grad=True)
 
     # set optimizer
     optimizer = torch.optim.SGD([fa], lr=optim_config.lr, momentum=optim_config.momentum)
     torch.autograd.set_detect_anomaly(True)
     # set loss obj
-    loss = pto.LossOptimize(lambda_snr=1.0, lambda_corr=1.0)
+    loss = pto.LossOptimize(lambda_snr=0.5, lambda_corr=1.0)
+    sim_data = eso.SimulationData.from_sim_parameters(sim_params=sim_params, device=device)
+    loss.loss_corr.set_weight_matrix(sim_data=sim_data)
     # run through optimization
     with tqdm.auto.trange(optim_config.num_steps) as t:
         t.set_description(f"progress")
@@ -96,7 +99,12 @@ def main(sim_params: eso.SimulationParameters, optim_config: poo.ConfigOptimizat
             optimizer.step()
             t.set_postfix(ordered_dict=OrderedDict({"loss": loss.value.item()}))
 
-    logging.info(f"optimized fa train: {build_input_tensors(fa)}")
+    optim_fa = build_input_tensors(fa)
+    logging.info(f"optimized fa train: {optim_fa}")
+    file_name = f"{optim_config.optim_save_path.stem}_optimized_fa"
+    save_name = optim_config.optim_save_path.with_name(file_name).with_suffix(".pt")
+    logging.info(f"saving file: {save_name}")
+    torch.save(optim_fa, save_name.as_posix())
 
 
 if __name__ == '__main__':
