@@ -19,7 +19,8 @@ def main():
     try:
         # simulate
         # simulations.single_pulse(sim_params=sim_params)
-        sim_data, sim_params = simulations.mese(sim_params=sim_params)
+        sim_data, sim_params = simulations.fid(sim_params=sim_params, fft=True)
+        # sim_data, sim_params = simulations.mese(sim_params=sim_params)
         db = DB.build_from_sim_data(sim_params=sim_params, sim_data=sim_data)
         # plot db curves
         db.plot()

@@ -22,6 +22,104 @@ import tqdm
 logModule = logging.getLogger(__name__)
 
 
+def fid(sim_params: options.SimulationParameters, fft: bool = True):
+    """ want to simulate a pulse and readout only for comparing fft with sum approach"""
+    # setup device
+    device = torch.device("cpu")
+    logModule.debug(f"torch device: {device}")
+    # setup single values only
+    sim_params.settings.t2_list = [50]
+    sim_params.settings.t1_list = [1.5]
+    sim_params.settings.b1_list = [0.8]
+    sim_params.sequence.ETL = 1
+    # no crushing - rephasing to calculate
+    area_slice_select = sim_params.sequence.gradient_excitation * sim_params.sequence.duration_excitation
+    area_rephase = - 0.5 * area_slice_select
+    sim_params.sequence.gradient_excitation_rephase = area_rephase / sim_params.sequence.duration_excitation_rephase
+    # get sim data
+    sim_data = options.SimulationData.from_sim_parameters(sim_params=sim_params, device=device)
+
+    # set up running plot and plot initial magnetization
+    if fft:
+        rows = 5
+    else:
+        rows = 3
+    plot_idx = 0
+    fig = plotting.prep_plot_running_mag(rows, 1, t2=sim_data.t2_vals[0], b1=sim_data.b1_vals[0])
+    fig = plotting.plot_running_mag(fig, sim_data, id=plot_idx)
+    plot_idx += 1
+    # get pulse
+    gp_excitation = prep.GradPulse.prep_single_grad_pulse(
+        params=sim_params, excitation_flag=True, grad_rephase_factor=1.05
+    )
+    gp_excitation.plot(sim_data=sim_data)
+
+    # get acquisition
+    acquisition = prep.GradPulse.prep_acquisition(params=sim_params)
+    # propagate pulse
+    # pulse
+    sim_data = functions.propagate_gradient_pulse_relax(
+        pulse_x=gp_excitation.data_pulse_x, pulse_y=gp_excitation.data_pulse_y,
+        grad=gp_excitation.data_grad, sim_data=sim_data,
+        dt_s=gp_excitation.dt_sampling_steps * 1e-6
+    )
+    # plot excitation profile
+    fig = plotting.plot_running_mag(fig, sim_data, id=plot_idx)
+    plot_idx += 1
+    # sample acquisition
+    if fft:
+        # prephase acquisition in case of fft
+        pre_acq = prep.GradPulse.prep_acquisition(params=sim_params)
+        pre_acq.data_grad = - pre_acq.data_grad
+        pre_acq.duration = pre_acq.duration / 2
+        sim_data = functions.propagate_gradient_pulse_relax(
+            pulse_x=pre_acq.data_pulse_x, pulse_y=pre_acq.data_pulse_y, grad=pre_acq.data_grad,
+            sim_data=sim_data, dt_s=pre_acq.duration * 1e-6
+        )
+        # plot dephased
+        fig = plotting.plot_running_mag(fig, sim_data, id=plot_idx)
+        plot_idx += 1
+        # acquisition
+        sim_data = functions.sample_acquisition(
+            etl_idx=0, sim_params=sim_params, sim_data=sim_data,
+            acquisition_grad=acquisition.data_grad, dt_s=acquisition.dt_sampling_steps * 1e-6
+        )
+        # plot after acquisition
+        fig = plotting.plot_running_mag(fig, sim_data, id=plot_idx)
+        plot_idx += 1
+        logModule.debug('Signal array processing fourier')
+        image_tensor = torch.fft.ifftshift(
+            torch.fft.ifft(sim_data.signal_tensor, dim=-1)
+        )
+        sim_data.emc_signal_mag = 2 * torch.sum(torch.abs(image_tensor),
+                                                dim=-1) / sim_params.settings.acquisition_number
+        sim_data.emc_signal_phase = 2 * torch.sum(torch.angle(image_tensor),
+                                                  dim=-1) / sim_params.settings.acquisition_number
+        plotting.plot_signal_traces(sim_data)
+        # rephase acquisition
+        sim_data = functions.propagate_gradient_pulse_relax(
+            pulse_x=pre_acq.data_pulse_x, pulse_y=pre_acq.data_pulse_y, grad=pre_acq.data_grad,
+            sim_data=sim_data, dt_s=pre_acq.duration * 1e-6
+        )
+    else:
+        # propagate half of acquisition time - to equalize with above we need half the time prephaser
+        # and half the time for read to arrive at the echo
+        relax_matrix = functions.matrix_propagation_relaxation_multidim(
+            dt_s=acquisition.duration * 1e-6, sim_data=sim_data
+        )
+        sim_data = functions.propagate_matrix_mag_vector(relax_matrix, sim_data)
+        # sum
+        mag = torch.sum(sim_data.magnetization_propagation[0, 0, 0], dim=0)
+        sim_data.emc_signal_mag[0, 0, 0] = torch.abs(mag[0] + 1j * mag[1])
+        sim_data.emc_signal_phase[0, 0, 0, 0] = torch.angle(mag[0] + 1j * mag[1])
+        # again propagate relaxation to arrive at same state (second half of read and rephasing)
+        sim_data = functions.propagate_matrix_mag_vector(relax_matrix, sim_data)
+    fig = plotting.plot_running_mag(fig, sim_data, id=plot_idx)
+    plot_idx += 1
+    plotting.display_running_plot(fig, f"fid_simulation_fft-{fft}")
+    return sim_data, sim_params
+
+
 def mese(sim_params: options.SimulationParameters):
     """ want to set up gradients and pulses like in the mese standard protocol
     For this we need all parts that are distinct and then set them up to pulss the calculation through
@@ -60,7 +158,7 @@ def mese(sim_params: options.SimulationParameters):
     # excitation
     sim_data = functions.propagate_gradient_pulse_relax(
         pulse_x=gp_excitation.data_pulse_x, pulse_y=gp_excitation.data_pulse_y, grad=gp_excitation.data_grad,
-        sim_data=sim_data, dt_s=gp_excitation.dt_sampling_steps*1e-6
+        sim_data=sim_data, dt_s=gp_excitation.dt_sampling_steps * 1e-6
     )
     # plot excitation profile
     fig = plotting.plot_running_mag(fig, sim_data, id=plot_idx)
@@ -94,7 +192,8 @@ def mese(sim_params: options.SimulationParameters):
             # pulse
             sim_data = functions.propagate_gradient_pulse_relax(
                 pulse_x=gps_refocus[loop_idx].data_pulse_x, pulse_y=gps_refocus[loop_idx].data_pulse_y,
-                grad=gps_refocus[loop_idx].data_grad, sim_data=sim_data, dt_s=gps_refocus[loop_idx].dt_sampling_steps*1e-6
+                grad=gps_refocus[loop_idx].data_grad, sim_data=sim_data,
+                dt_s=gps_refocus[loop_idx].dt_sampling_steps * 1e-6
             )
             # timing
             if loop_idx == 0:
@@ -106,7 +205,7 @@ def mese(sim_params: options.SimulationParameters):
             # acquisition
             sim_data = functions.sample_acquisition(
                 etl_idx=loop_idx, sim_params=sim_params, sim_data=sim_data,
-                acquisition_grad=acquisition.data_grad, dt_s=acquisition.dt_sampling_steps*1e-6
+                acquisition_grad=acquisition.data_grad, dt_s=acquisition.dt_sampling_steps * 1e-6
             )
 
             fig = plotting.plot_running_mag(fig, sim_data, id=plot_idx)
@@ -118,7 +217,8 @@ def mese(sim_params: options.SimulationParameters):
         dim=-1
     )
     sim_data.emc_signal_mag = 2 * torch.sum(torch.abs(image_tensor), dim=-1) / sim_params.settings.acquisition_number
-    sim_data.emc_signal_phase = 2 * torch.sum(torch.angle(image_tensor), dim=-1) / sim_params.settings.acquisition_number
+    sim_data.emc_signal_phase = 2 * torch.sum(torch.angle(image_tensor),
+                                              dim=-1) / sim_params.settings.acquisition_number
 
     if sim_params.sequence.ETL % 2 > 0:
         # for some reason we get a shift from the fft when used with odd array length.
@@ -142,7 +242,7 @@ def mese_optim(sim_params: options.SimulationParameters, sim_data: options.Simul
     # excitation
     sim_data = functions.propagate_gradient_pulse_relax(
         pulse_x=gp_excitation.data_pulse_x, pulse_y=gp_excitation.data_pulse_y, grad=gp_excitation.data_grad,
-        sim_data=sim_data, dt_s=gp_excitation.dt_sampling_steps*1e-6
+        sim_data=sim_data, dt_s=gp_excitation.dt_sampling_steps * 1e-6
     )
 
     # calculate equal timings only once
@@ -175,7 +275,7 @@ def mese_optim(sim_params: options.SimulationParameters, sim_data: options.Simul
         sim_data = functions.propagate_gradient_pulse_relax(
             pulse_x=px, pulse_y=py,
             grad=gp_refocusing[loop_idx].data_grad, sim_data=sim_data,
-            dt_s=gp_refocusing[loop_idx].dt_sampling_steps*1e-6
+            dt_s=gp_refocusing[loop_idx].dt_sampling_steps * 1e-6
         )
         # timing
         if loop_idx == 0:
@@ -188,19 +288,17 @@ def mese_optim(sim_params: options.SimulationParameters, sim_data: options.Simul
         # acquisition
         sim_data = functions.sample_acquisition(
             etl_idx=loop_idx, sim_params=sim_params, sim_data=sim_data,
-            acquisition_grad=acquisition.data_grad, dt_s=acquisition.dt_sampling_steps*1e-6
+            acquisition_grad=acquisition.data_grad, dt_s=acquisition.dt_sampling_steps * 1e-6
         )
 
     logModule.debug('Signal array processing fourier')
-    image_tensor = torch.fft.fftshift(
-        torch.fft.fft(
-            torch.fft.fftshift(
-                sim_data.signal_tensor, dim=-1
-            ), dim=-1
-        ), dim=-1
+    image_tensor = torch.fft.ifftshift(
+        torch.fft.ifft(sim_data.signal_tensor, dim=-1),
+        dim=-1
     )
     sim_data.emc_signal_mag = 2 * torch.sum(torch.abs(image_tensor), dim=-1) / sim_params.settings.acquisition_number
-    sim_data.emc_signal_phase = 2 * torch.sum(torch.angle(image_tensor), dim=-1) / sim_params.settings.acquisition_number
+    sim_data.emc_signal_phase = 2 * torch.sum(torch.angle(image_tensor),
+                                              dim=-1) / sim_params.settings.acquisition_number
 
     if sim_params.sequence.ETL % 2 > 0:
         # for some reason we get a shift from the fft when used with odd array length.
@@ -244,9 +342,8 @@ def single_pulse(sim_params: options.SimulationParameters):
     logModule.debug("excitation")
     sim_data = functions.propagate_gradient_pulse_relax(
         grad=grad_pulse_data.data_grad, pulse_x=grad_pulse_data.data_pulse_x,
-        pulse_y=grad_pulse_data.data_pulse_y, dt_s=grad_pulse_data.dt_sampling_steps*1e-6, sim_data=sim_data)
+        pulse_y=grad_pulse_data.data_pulse_y, dt_s=grad_pulse_data.dt_sampling_steps * 1e-6, sim_data=sim_data)
 
     fig = plotting.plot_running_mag(fig, sim_data, id=plot_idx)
     plot_idx += 1
     plotting.display_running_plot(fig)
-
