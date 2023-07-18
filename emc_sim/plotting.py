@@ -46,11 +46,14 @@ def plot_signal_traces(sim_data: options.SimulationData):
     # plot at most 5 values
     num_t2s = min(sim_data.t2_vals.shape[0], 5)
     num_b1s = min(sim_data.b1_vals.shape[0], 5)
+    num_echoes = min(sim_data.emc_signal_mag.shape[-2], 2)
     t2_vals = sim_data.t2_vals[:num_t2s]
     b1_vals = sim_data.b1_vals[:num_b1s]
     # dims signal tensor [t1s, t2s, b1s, echoes, sim sampling pts]
-    mag_plot_abs = torch.abs(sim_data.signal_tensor[0, :, :, :2].clone().detach().cpu())
-    mag_plot_phase = torch.angle(sim_data.signal_tensor[0, :, :, :2].clone().detach().cpu())
+    mag_plot_x = torch.real(sim_data.signal_tensor[0, :, :, :num_echoes].clone().detach().cpu())
+    mag_plot_y = torch.imag(sim_data.signal_tensor[0, :, :, :num_echoes].clone().detach().cpu())
+    mag_plot_abs = torch.sqrt(mag_plot_y**2 + mag_plot_x**2)
+    mag_plot_phase = torch.angle(sim_data.signal_tensor[0, :, :, :num_echoes].clone().detach().cpu()) / torch.pi
     # setup figure
     fig = psub.make_subplots(
         rows=num_t2s, cols=num_b1s,
@@ -60,16 +63,21 @@ def plot_signal_traces(sim_data: options.SimulationData):
     x_ax = torch.arange(1, 1 + sim_data.signal_tensor.shape[-1])
     for idx_t2 in range(num_t2s):
         for idx_b1 in range(num_b1s):
-            for idx_echo in range(2):
-                trace_abs = torch.div(
-                    mag_plot_abs[idx_t2, idx_b1, idx_echo],
-                    torch.max(mag_plot_abs[idx_t2, idx_b1, idx_echo]))
-                trace_phase = torch.div(
-                    mag_plot_phase[idx_t2, idx_b1, idx_echo],
-                    torch.pi
+            for idx_echo in range(num_echoes):
+                trace_abs = mag_plot_abs[idx_t2, idx_b1, idx_echo] / torch.max(mag_plot_abs[idx_t2, idx_b1, idx_echo])
+                trace_phase = mag_plot_phase[idx_t2, idx_b1, idx_echo]
+                fig.add_trace(
+                    go.Scatter(x=x_ax, y=mag_plot_x[idx_t2, idx_b1, idx_echo], name=f"mag_x echo {idx_echo+1}"),
+                    row=1+idx_t2, col=1+idx_b1,
+                    secondary_y=False
                 )
                 fig.add_trace(
-                    go.Scatter(x=x_ax, y=trace_abs, name=f"mag_signal echo {idx_echo+1}"),
+                    go.Scatter(x=x_ax, y=mag_plot_y[idx_t2, idx_b1, idx_echo], name=f"mag_y echo {idx_echo+1}"),
+                    row=1+idx_t2, col=1+idx_b1,
+                    secondary_y=False
+                )
+                fig.add_trace(
+                    go.Scatter(x=x_ax, y=trace_abs, fill="tozeroy", name=f"mag_signal echo {idx_echo+1}"),
                     row=1+idx_t2, col=1+idx_b1,
                     secondary_y=False
                 )
@@ -153,7 +161,7 @@ def prep_plot_running_mag(rows: int, cols: int, t2: float, b1: float):
     return fig
 
 
-def plot_running_mag(fig: go.Figure, sim_data: options.SimulationData, id: int, name: str = ""):
+def plot_running_mag(fig: go.Figure, sim_data: options.SimulationData, id: int):
     plot_mag = sim_data.magnetization_propagation[0, 0, 0].clone().detach().cpu()
     axis = sim_data.sample_axis.clone().detach().cpu()
     labels = ["x", "y", "z", "e", "mag xy", "phase xy"]
@@ -181,5 +189,5 @@ def plot_running_mag(fig: go.Figure, sim_data: options.SimulationData, id: int, 
     return fig
 
 
-def display_running_plot(fig):
-    fig.write_html(f'./tests/grad_pulse_propagation_5us.html')
+def display_running_plot(fig, name: str = ""):
+    fig.write_html(f'./tests/{name}_grad_pulse_propagation.html')

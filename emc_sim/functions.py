@@ -60,8 +60,9 @@ def propagate_gradient_pulse_relax(
     # propagation_matrix = torch.eye(4)[None, None, None, None].to(sim_data.device)
     if torch.prod(torch.tensor(pulse_x.shape)) < 2:
         iter_range = 1
-        pulse_x = pulse_x[None, :]
-        pulse_y = pulse_y[None, :]
+        if pulse_x.shape.__len__() < 2:
+            pulse_x = pulse_x[None, :]
+            pulse_y = pulse_y[None, :]
     else:
         iter_range = pulse_x.shape[1]
     for i in range(iter_range):

@@ -49,7 +49,7 @@ def build_input_tensors(pulse_fa: torch.tensor):
     # add lower bound and scale with range
     # mapped_pulse_fa *= torch.gradient(fa_bounds)[0][0]
     # mapped_pulse_fa += fa_bounds[0]
-    return torch.nn.Sigmoid()(pulse_fa)
+    return torch.nn.Tanh()(pulse_fa)
 
 
 def main(sim_params: eso.SimulationParameters, optim_config: poo.ConfigOptimization):
@@ -68,7 +68,7 @@ def main(sim_params: eso.SimulationParameters, optim_config: poo.ConfigOptimizat
 
     # need to set initial values - take fa to be between 0 and 1. map it with a sigmoid to ensure bounds.
     # 1 is 180 degrees
-    fa = torch.ones((sim_params.sequence.ETL,), device=device, requires_grad=True)
+    fa = torch.full((sim_params.sequence.ETL,), fill_value=0.5, device=device, requires_grad=True)
 
     # set optimizer
     optimizer = torch.optim.SGD([fa], lr=optim_config.lr, momentum=optim_config.momentum)
@@ -100,9 +100,10 @@ def main(sim_params: eso.SimulationParameters, optim_config: poo.ConfigOptimizat
             t.set_postfix(ordered_dict=OrderedDict({"loss": loss.value.item()}))
 
     optim_fa = build_input_tensors(fa)
-    logging.info(f"optimized fa train: {optim_fa}")
+    logging.info(f"optimized fa train: {optim_fa * 180.0}")
     file_name = f"{optim_config.optim_save_path.stem}_optimized_fa"
     save_name = optim_config.optim_save_path.with_name(file_name).with_suffix(".pt")
+    save_name.mkdir(parents=True, exist_ok=True)
     logging.info(f"saving file: {save_name}")
     torch.save(optim_fa, save_name.as_posix())
 
