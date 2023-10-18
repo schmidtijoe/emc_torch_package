@@ -9,6 +9,7 @@ import typing
 import pathlib as plib
 import pandas as pd
 from scipy import stats
+from pypsi.parameters import EmcParameters
 
 logModule = logging.getLogger(__name__)
 
@@ -26,8 +27,8 @@ class SimulationConfig(sp.Serializable):
     save_path: str = sp.field(alias=["-s"], default="./data")
     # set filename of database
     database_name: str = sp.field(alias=["-db"], default="database_test.pkl")
-    # set filepath to external pulse-files (pkl or json)
-    pypsi_path: str = sp.field(alias=["-rfpf"], default="./external")
+    # set filepath to interface
+    pypsi_path: str = sp.field(alias=["-p"], default="./tests/pypsi_vespa_acc2_1a.pkl")
 
     # set signal echo processing -> this enables sampling the signal over the 1d slice dimension
     # substituting the readout and using identical readout time etc.
@@ -57,68 +58,68 @@ class SimulationConfig(sp.Serializable):
         # self.mpNumCpus = int(self.mpNumCpus)
         pass
 
-
-@dataclass
-class SequenceConfiguration(sp.Serializable):
-    """
-        Parameters related to Sequence simulation
-        """
-    # global parameter gamma [Hz/t]
-    gamma_hz: float = 42577478.518
-
-    # echo train length
-    ETL: int = 16
-    # echo spacing [ms]
-    ESP: float = 9.0
-    # bandwidth [Hz/px]
-    bw: float = 349
-    # gradient mode
-
-    # Excitation, Flip Angle [°]
-    excitation_angle: float = 90.0
-    # Excitation, Phase [°]
-    excitation_phase: float = 90.0
-    # Excitation, gradient if rectangular/trapezoid [mt/m]
-    gradient_excitation: float = -18.5
-    # Excitation, duration of pulse [us]
-    duration_excitation: float = 2560.0
-
-    gradient_excitation_rephase: float = -10.51  # [mT/m], rephase
-    duration_excitation_rephase: float = 1080.0  # [us], rephase
-
-    # Refocussing, Flip Angle [°]
-    refocus_angle: typing.List = sp.field(default_factory=lambda: [140.0])
-    # Refocussing, Phase [°]
-    refocus_phase: typing.List = sp.field(default_factory=lambda: [0.0])
-    # Refocussing, gradient strength if rectangular/trapezoid [mt/m]
-    gradient_refocus: float = -36.2
-    # Refocussing, duration of pulse [us]
-    duration_refocus: float = 3584.0
-
-    gradient_crush: float = -38.7  # [mT/m], crusher
-    duration_crush: float = 1000.0  # [us], crushe
-    gradient_acquisition: float = 0.0  # set automatically after settings init
-
-    # time for acquisition (of one pixel) * 1e6 <- [(px)s] * 1e6
-
-    def __post_init__(self):
-        self.gamma_pi: float = self.gamma_hz * 2 * torch.pi
-        self.duration_acquisition: float = 1e6 / self.bw  # [us]
-        if self.refocus_phase.__len__() != self.refocus_angle.__len__():
-            err = f"provide same amount of refocusing pulse angle ({self.refocus_angle.__len__()}) " \
-                  f"and phases ({self.refocus_phase.__len__()})"
-            logModule.error(err)
-            raise AttributeError(err)
-        # check for phase values
-        for l_idx in range(self.refocus_phase.__len__()):
-            while abs(self.refocus_phase[l_idx]) > 180.0:
-                self.refocus_phase[l_idx] = self.refocus_phase[l_idx] - torch.sign(self.refocus_phase[l_idx]) * 180.0
-            while abs(self.refocus_angle[l_idx]) > 180.0:
-                self.refocus_angle[l_idx] = self.refocus_angle[l_idx] - torch.sign(self.refocus_angle[l_idx]) * 180.0
-        while self.refocus_angle.__len__() < self.ETL:
-            # fill up list with last value
-            self.refocus_angle.append(self.refocus_angle[-1])
-            self.refocus_phase.append(self.refocus_phase[-1])
+#
+# @dataclass
+# class SequenceConfiguration(sp.Serializable):
+#     """
+#         Parameters related to Sequence simulation
+#         """
+#     # global parameter gamma [Hz/t]
+#     gamma_hz: float = 42577478.518
+#
+#     # echo train length
+#     ETL: int = 16
+#     # echo spacing [ms]
+#     ESP: float = 9.0
+#     # bandwidth [Hz/px]
+#     bw: float = 349
+#     # gradient mode
+#
+#     # Excitation, Flip Angle [°]
+#     excitation_angle: float = 90.0
+#     # Excitation, Phase [°]
+#     excitation_phase: float = 90.0
+#     # Excitation, gradient if rectangular/trapezoid [mt/m]
+#     gradient_excitation: float = -18.5
+#     # Excitation, duration of pulse [us]
+#     duration_excitation: float = 2560.0
+#
+#     gradient_excitation_rephase: float = -10.51  # [mT/m], rephase
+#     duration_excitation_rephase: float = 1080.0  # [us], rephase
+#
+#     # Refocussing, Flip Angle [°]
+#     refocus_angle: typing.List = sp.field(default_factory=lambda: [140.0])
+#     # Refocussing, Phase [°]
+#     refocus_phase: typing.List = sp.field(default_factory=lambda: [0.0])
+#     # Refocussing, gradient strength if rectangular/trapezoid [mt/m]
+#     gradient_refocus: float = -36.2
+#     # Refocussing, duration of pulse [us]
+#     duration_refocus: float = 3584.0
+#
+#     gradient_crush: float = -38.7  # [mT/m], crusher
+#     duration_crush: float = 1000.0  # [us], crushe
+#     gradient_acquisition: float = 0.0  # set automatically after settings init
+#
+#     # time for acquisition (of one pixel) * 1e6 <- [(px)s] * 1e6
+#
+#     def __post_init__(self):
+#         self.gamma_pi: float = self.gamma_hz * 2 * torch.pi
+#         self.duration_acquisition: float = 1e6 / self.bw  # [us]
+#         if self.refocus_phase.__len__() != self.refocus_angle.__len__():
+#             err = f"provide same amount of refocusing pulse angle ({self.refocus_angle.__len__()}) " \
+#                   f"and phases ({self.refocus_phase.__len__()})"
+#             logModule.error(err)
+#             raise AttributeError(err)
+#         # check for phase values
+#         for l_idx in range(self.refocus_phase.__len__()):
+#             while abs(self.refocus_phase[l_idx]) > 180.0:
+#                 self.refocus_phase[l_idx] = self.refocus_phase[l_idx] - torch.sign(self.refocus_phase[l_idx]) * 180.0
+#             while abs(self.refocus_angle[l_idx]) > 180.0:
+#                 self.refocus_angle[l_idx] = self.refocus_angle[l_idx] - torch.sign(self.refocus_angle[l_idx]) * 180.0
+#         while self.refocus_angle.__len__() < self.ETL:
+#             # fill up list with last value
+#             self.refocus_angle.append(self.refocus_angle[-1])
+#             self.refocus_phase.append(self.refocus_phase[-1])
 
 
 @dataclass
@@ -151,7 +152,7 @@ class SimulationSettings(sp.Serializable):
 @dataclass
 class SimulationParameters(sp.Serializable):
     config: SimulationConfig = SimulationConfig()
-    sequence: SequenceConfiguration = SequenceConfiguration()
+    sequence: EmcParameters = EmcParameters()
     settings: SimulationSettings = SimulationSettings()
 
     def __post_init__(self):
@@ -195,7 +196,7 @@ class SimulationParameters(sp.Serializable):
             emc_seq_config = sim_params.config.emc_seq_config
             if args.config.emc_seq_config:
                 emc_seq_config = args.config.emc_seq_config
-            sim_params.sequence = SequenceConfiguration.load(emc_seq_config)
+            sim_params.sequence = EmcParameters.load(emc_seq_config)
         sim_params.set_acquisition_gradient()
         return sim_params
 
@@ -214,7 +215,7 @@ class SimulationParameters(sp.Serializable):
             if self.settings.__getattribute__(key) != def_settings.__getattribute__(key):
                 non_default_settings.__setitem__(key, value)
 
-        def_sequence = SequenceConfiguration()
+        def_sequence = EmcParameters()
         non_default_sequence = {}
         for key, value in vars(self.sequence).items():
             # catch post init attribute
@@ -268,24 +269,24 @@ class SimulationData:
     def from_sim_parameters(cls, sim_params: SimulationParameters, device: torch.device):
         # set values with some error catches
         # t1
-        if type(sim_params.settings.t1_list) == list:
+        if isinstance(sim_params.settings.t1_list, list):
             t1_vals = torch.tensor(sim_params.settings.t1_list, device=device)
         else:
             t1_vals = torch.tensor([sim_params.settings.t1_list], dtype=torch.float32, device=device)
         # b1
-        if type(sim_params.settings.b1_list) == list:
+        if isinstance(sim_params.settings.b1_list, list):
             b1_vals = torch.tensor(sim_params.settings.b1_list, device=device)
         else:
             b1_vals = torch.tensor([sim_params.settings.b1_list], dtype=torch.float32, device=device)
         # t2
         array = []
-        if type(sim_params.settings.t2_list) == list:
+        if isinstance(sim_params.settings.t2_list, list):
             for item in sim_params.settings.t2_list:
-                if type(item) == str:
+                if isinstance(item, str):
                     item = [float(i) for i in item[1:-1].split(',')]
-                if type(item) == int:
+                if isinstance(item, int):
                     item = float(item)
-                if type(item) == float:
+                if isinstance(item, float):
                     array.append(item)
                 else:
                     array.extend(torch.arange(*item).tolist())
@@ -311,7 +312,7 @@ class SimulationData:
         # signal tensor is supposed to hold all acquisition points for all reads
         signal_tensor = torch.zeros((
             t1_vals.shape[0], t2_vals.shape[0], b1_vals.shape[0],
-            sim_params.sequence.ETL, sim_params.settings.acquisition_number),
+            sim_params.sequence.etl, sim_params.settings.acquisition_number),
             dtype=torch.complex128, device=device)
 
         # allocate
@@ -319,12 +320,12 @@ class SimulationData:
         # (we get this in the end by calculation, no need to allocate for it and carry it through)
         emc_signal_mag = torch.zeros(
             (t1_vals.shape[0], t2_vals.shape[0], b1_vals.shape[0],
-            sim_params.sequence.ETL),
+            sim_params.sequence.etl),
             device=device
         )
         emc_signal_phase = torch.zeros(
             (t1_vals.shape[0], t2_vals.shape[0], b1_vals.shape[0],
-             sim_params.sequence.ETL),
+             sim_params.sequence.etl),
             device=device)
         instance = cls(
             t1_vals=t1_vals, t2_vals=t2_vals, b1_vals=b1_vals,
@@ -352,7 +353,7 @@ class SimulationData:
                 value.to(device)
 
 
-def createCommandlineParser():
+def create_cli():
     """
     Build the parser for arguments
     Parse the input arguments.
@@ -360,7 +361,7 @@ def createCommandlineParser():
     parser = sp.ArgumentParser(prog='emc_torch_sim')
     parser.add_arguments(SimulationConfig, dest="config")
     parser.add_arguments(SimulationSettings, dest="settings")
-    parser.add_arguments(SequenceConfiguration, dest="sequence")
+    parser.add_arguments(EmcParameters, dest="sequence")
 
     args = parser.parse_args()
 

@@ -111,7 +111,7 @@ class GradPulse:
             sim_params=params,
             excitation=excitation_flag)
 
-        # ToDo: attention: prephasing artificaial read!
+        # ToDo: attention: prephasing artificial read!
         if not excitation_flag:
             # add prephasing readout if set - only applies to refocusing pulses with sym spoiling.
             # not applies to excitation pulses with sym spoiling
@@ -307,7 +307,7 @@ class Timing:
         self.time_pre_pulse = time_pre_pulse
 
     @classmethod
-    def buildFillTiming_mese(cls, params: options.SimulationParameters = options.SimulationParameters()):
+    def build_fill_timing_mese(cls, params: options.SimulationParameters = options.SimulationParameters()):
         """
         Create a timing scheme: save time in [us] in array[2] -> [0] before pulse, [1] after pulse.
         For all refocusing pulses, i.e. ETL times
@@ -315,29 +315,29 @@ class Timing:
         :return: timing array
         """
         # all in [us]
-        time_pre_pulse = torch.zeros(params.sequence.ETL)
-        time_post_pulse = torch.zeros(params.sequence.ETL)
+        time_pre_pulse = torch.zeros(params.sequence.etl)
+        time_post_pulse = torch.zeros(params.sequence.etl)
 
         # after excitation - before first refocusing:
-        time_pre_pulse[0] = 1000 * params.sequence.ESP / 2 - (
+        time_pre_pulse[0] = 1000 * params.sequence.esp / 2 - (
                 params.sequence.duration_excitation / 2 + params.sequence.duration_excitation_rephase
                 + params.sequence.duration_refocus / 2
         )
         # refocusing pulse...
         # after first refocusing
-        time_post_pulse[0] = 1000 * params.sequence.ESP / 2 - (
+        time_post_pulse[0] = 1000 * params.sequence.esp / 2 - (
                 params.sequence.duration_refocus / 2 + params.sequence.duration_crush +
                 params.sequence.duration_acquisition / 2
         )
 
         # in this scheme, equal for all pulses, should incorporate some kind of "menu" for different sequence flavors:
-        for pulseIdx in torch.arange(1, params.sequence.ETL):
+        for pulseIdx in torch.arange(1, params.sequence.etl):
             time_pre_pulse[pulseIdx] = time_post_pulse[0]
             time_post_pulse[pulseIdx] = time_post_pulse[0]
         return cls(time_pre_pulse=time_pre_pulse, time_post_pulse=time_post_pulse)
 
     @classmethod
-    def buildFillTiming_se(cls, params: options.SimulationParameters = options.SimulationParameters()):
+    def build_fill_timing_se(cls, params: options.SimulationParameters = options.SimulationParameters()):
         """
         Create a timing scheme: save time in [us] in array[2] -> [0] before pulse, [1] after pulse.
         For SE sequence
@@ -347,13 +347,13 @@ class Timing:
         time_pre_pulse = torch.zeros(1)
         time_post_pulse = torch.zeros(1)
         # after excitation - before refocusing (check for prephaser):
-        time_pre_pulse[0] = 1000 * params.sequence.ESP / 2 - (
+        time_pre_pulse[0] = 1000 * params.sequence.esp / 2 - (
                 params.sequence.duration_excitation / 2 + params.sequence.duration_excitation_rephase
                 + params.sequence.duration_refocus / 2
         )
         # refocusing pulse...
         # after refocusing
-        time_post_pulse[0] = 1000 * params.sequence.ESP / 2 - (
+        time_post_pulse[0] = 1000 * params.sequence.esp / 2 - (
                 params.sequence.duration_refocus / 2 + params.sequence.duration_crush +
                 params.sequence.duration_acquisition / 2
         )
@@ -384,7 +384,7 @@ def prep_gradient_pulse_mese(
     )
     # built list of grad_pulse events, acquisition and timing
     grad_pulses = [gp_refocus_1]
-    for r_idx in torch.arange(2, sim_params.sequence.ETL + 1):
+    for r_idx in torch.arange(2, sim_params.sequence.etl + 1):
         gp_refocus = GradPulse.prep_grad_pulse(
             pulse_type='Refocusing',
             pulse_number=r_idx,
@@ -397,6 +397,6 @@ def prep_gradient_pulse_mese(
     acquisition = GradPulse.prep_acquisition(params=sim_params)
 
     log_module.debug(f"calculate timing")
-    timing = Timing.buildFillTiming_mese(sim_params)
+    timing = Timing.build_fill_timing_mese(sim_params)
 
     return gp_excitation, grad_pulses, timing, acquisition

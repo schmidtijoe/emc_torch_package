@@ -4,7 +4,7 @@ import logging
 
 
 def main():
-    parser, prog_args = options.createCommandlineParser()
+    parser, prog_args = options.create_cli()
 
     sim_params = options.SimulationParameters.from_cmd_args(prog_args)
     # set logging level after possible config file read
@@ -24,7 +24,7 @@ def main():
         db = DB.build_from_sim_data(sim_params=sim_params, sim_data=sim_data)
         # plot db curves
         db.plot()
-        # plot s\imulation
+        # plot simulation
         # plotting.plot_emc(sim_data)
         # save db
 
