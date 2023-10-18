@@ -162,7 +162,8 @@ def optimize(sim_params: eso.SimulationParameters, optim_config: options.ConfigO
                 p_x=px_input, p_y=py_input, g=g_input, g_r=gr_input
             )
 
-            wandb.log(loss.get_registered_loss_dict())
+            if not sim_params.config.debug_flag:
+                wandb.log(loss.get_registered_loss_dict())
 
             loss.value.backward()
             optimizer.step()
@@ -171,7 +172,7 @@ def optimize(sim_params: eso.SimulationParameters, optim_config: options.ConfigO
                                                     "g max": torch.max(torch.abs(g)).item()}))
 
     plotting.plot_grad_pulse_optim_run(i, px_input, py_input, g_input, gr_input,
-                                       config=optim_config, dt_us=dt_s)
+                                       config=optim_config, dt_us=dt_s*1e6)
     plotting.plot_mag_prop(sim_data=sim_data,
                            target_profile=target_shape,
                            run=i, config=optim_config)

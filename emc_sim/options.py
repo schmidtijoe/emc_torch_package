@@ -27,14 +27,12 @@ class SimulationConfig(sp.Serializable):
     # set filename of database
     database_name: str = sp.field(alias=["-db"], default="database_test.pkl")
     # set filepath to external pulse-files (pkl or json)
-    path_to_rfpf: str = sp.field(alias=["-rfpf"], default="./external")
+    pypsi_path: str = sp.field(alias=["-rfpf"], default="./external")
 
-    # name of external pulse file for excitation - assumed to be rf_pulse_files compatible.
-    # See rf_pulse_files to convert from .txt or .pta
-    rfpf_excitation: str = sp.field(alias=["-rfpf_e"], default="")
-    # name of external pulse file for refocussing - assumed to be rf_pulse_files compatible.
-    # See rf_pulse_files to convert from .txt or .pta
-    rfpf_refocus: str = sp.field(alias=["-rfpf_r"], default="")
+    # set signal echo processing -> this enables sampling the signal over the 1d slice dimension
+    # substituting the readout and using identical readout time etc.
+    # when turned off the spin contributions are summed across the profile
+    signal_fourier_sampling: bool = sp.field(alias="-sfs", default=True)
 
     # set flag to visualize pulse profiles and sequence scheme
     visualize: bool = True
