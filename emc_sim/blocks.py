@@ -14,7 +14,6 @@ class GPDetails:
     excitation_flag: bool
     grad_crush_rephase: torch.tensor
     duration_crush_rephase: torch.tensor
-    pypsi_path: plib.Path
 
     @classmethod
     def get_gp_details(cls, params: options.SimulationParameters, excitation_flag: bool):
@@ -97,14 +96,16 @@ class GradPulse:
         # get duration & grad pulse details
         gp_details = GPDetails.get_gp_details(params=params, excitation_flag=excitation_flag)
         # read rf
-        rf = pypsi.Params.pulse.load(gp_details.pypsi_path)
+        pypsi_params = pypsi.Params().load(params.config.pypsi_path)
+        rf = pypsi_params.pulse
+        # rf = .pulse.load(gp_details.pypsi_path)
 
         if abs(rf.duration_in_us - gp_details.duration_pulse) > 1e-5:
             rf.resample_to_duration(duration_in_us=int(gp_details.duration_pulse))
         pulse = torch.from_numpy(rf.amplitude) * torch.exp(torch.from_numpy(1j * rf.phase))
 
         # calculate and normalize
-        pulse_from_pypsi = functions.pulseCalibrationIntegral(
+        pulse_from_pypsi = functions.pulse_calibration_integral(
             pulse=pulse,
             delta_t=rf.get_dt_sampling_in_us(),
             pulse_number=pulse_number,
@@ -193,14 +194,13 @@ class GradPulse:
     @staticmethod
     def build_pulse_grad_shapes(
             gp_details: GPDetails, pulse: torch.tensor, duration_pre: float, grad_amp_pre: float):
-        grad_amp_pre = torch.tensor(grad_amp_pre)
         """ want to build the shapes given slice gradient pre, spoil and slice select and align it to the given pulse"""
         # grad amplitudes are values, pulse is a shape already with complex numbers and
         # distributed across different b1 values -> pulse dim [# b1, # pulse sampling steps]
-        if torch.abs(grad_amp_pre) < 1e-5:
-            duration_pre = torch.zeros(1)
-        else:
-            duration_pre = torch.tensor(duration_pre)
+        if abs(grad_amp_pre) < 1e-5:
+            duration_pre = 1
+        duration_pre = torch.full(size=(1,), fill_value=duration_pre)
+        grad_amp_pre = torch.full(size=(1,), fill_value=grad_amp_pre)
         num_sample_pulse = pulse.shape[1]
         dt_us = gp_details.duration_pulse / num_sample_pulse
         # calculate total number of sampling points
@@ -247,7 +247,7 @@ class GradPulse:
 
         pulse = torch.from_numpy(rf.amplitude) * torch.exp(torch.from_numpy(1j * rf.phase))
         # calculate and normalize
-        pulse_from_pypsi = functions.pulseCalibrationIntegral(
+        pulse_from_pypsi = functions.pulse_calibration_integral(
             pulse=pulse,
             delta_t=rf.get_dt_sampling_in_us(),
             pulse_number=0,
@@ -363,40 +363,3 @@ class Timing:
         self.time_post_pulse = self.time_post_pulse.to(device)
         self.time_pre_pulse = self.time_pre_pulse.to(device)
 
-
-def prep_gradient_pulse_mese(
-        sim_params: options.SimulationParameters) -> (GradPulse, list, Timing, GradPulse):
-    log_module.debug('pulse preparation')
-    gp_excitation = GradPulse.prep_grad_pulse(
-        pulse_type='Excitation',
-        pulse_number=0,
-        sym_spoil=False,
-        params=sim_params,
-        orig_mese=False
-    )
-
-    gp_refocus_1 = GradPulse.prep_grad_pulse(
-        pulse_type='Refocusing_1',
-        pulse_number=1,
-        sym_spoil=False,
-        params=sim_params,
-        orig_mese=False
-    )
-    # built list of grad_pulse events, acquisition and timing
-    grad_pulses = [gp_refocus_1]
-    for r_idx in torch.arange(2, sim_params.sequence.etl + 1):
-        gp_refocus = GradPulse.prep_grad_pulse(
-            pulse_type='Refocusing',
-            pulse_number=r_idx,
-            sym_spoil=True,
-            params=sim_params,
-            orig_mese=False
-        )
-        grad_pulses.append(gp_refocus)
-
-    acquisition = GradPulse.prep_acquisition(params=sim_params)
-
-    log_module.debug(f"calculate timing")
-    timing = Timing.build_fill_timing_mese(sim_params)
-
-    return gp_excitation, grad_pulses, timing, acquisition

@@ -58,7 +58,7 @@ def plot_signal_traces(sim_data: options.SimulationData):
     fig = psub.make_subplots(
         rows=num_t2s, cols=num_b1s,
         subplot_titles=[f"T2: {t2_*1e3:.1f} ms, B1: {b1_:.1f}" for t2_ in t2_vals for b1_ in b1_vals],
-        specs=[[{"secondary_y": True} for b1_ in b1_vals] for t2_ in t2_vals]
+        specs=[[{"secondary_y": True}] * b1_vals] * t2_vals
     )
     x_ax = torch.arange(1, 1 + sim_data.signal_tensor.shape[-1])
     for idx_t2 in range(num_t2s):

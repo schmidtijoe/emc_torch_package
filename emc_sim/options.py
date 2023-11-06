@@ -9,9 +9,9 @@ import typing
 import pathlib as plib
 import pandas as pd
 from scipy import stats
-from pypsi.parameters import EmcParameters
+import pypsi
 
-logModule = logging.getLogger(__name__)
+log_module = logging.getLogger(__name__)
 
 
 @dataclass
@@ -24,11 +24,13 @@ class SimulationConfig(sp.Serializable):
     # provide separate sequence params
     emc_seq_config: str = sp.field(alias=["-esc"], default="")
     # set path to save database and used config
-    save_path: str = sp.field(alias=["-s"], default="./data")
+    save_path: str = sp.field(alias=["-s"], default="")
     # set filename of database
     database_name: str = sp.field(alias=["-db"], default="database_test.pkl")
     # set filepath to interface
-    pypsi_path: str = sp.field(alias=["-p"], default="./tests/pypsi_vespa_acc2_1a.pkl")
+    pypsi_path: str = sp.field(alias=["-p"], default="./tests/pypsi_mese_test.pkl")
+    # set simulation type
+    sim_type: str = sp.field(alias="-t", default="mese", choices=["mese", "megesse", "fid", "single"])
 
     # set signal echo processing -> this enables sampling the signal over the 1d slice dimension
     # substituting the readout and using identical readout time etc.
@@ -58,68 +60,13 @@ class SimulationConfig(sp.Serializable):
         # self.mpNumCpus = int(self.mpNumCpus)
         pass
 
-#
-# @dataclass
-# class SequenceConfiguration(sp.Serializable):
-#     """
-#         Parameters related to Sequence simulation
-#         """
-#     # global parameter gamma [Hz/t]
-#     gamma_hz: float = 42577478.518
-#
-#     # echo train length
-#     ETL: int = 16
-#     # echo spacing [ms]
-#     ESP: float = 9.0
-#     # bandwidth [Hz/px]
-#     bw: float = 349
-#     # gradient mode
-#
-#     # Excitation, Flip Angle [°]
-#     excitation_angle: float = 90.0
-#     # Excitation, Phase [°]
-#     excitation_phase: float = 90.0
-#     # Excitation, gradient if rectangular/trapezoid [mt/m]
-#     gradient_excitation: float = -18.5
-#     # Excitation, duration of pulse [us]
-#     duration_excitation: float = 2560.0
-#
-#     gradient_excitation_rephase: float = -10.51  # [mT/m], rephase
-#     duration_excitation_rephase: float = 1080.0  # [us], rephase
-#
-#     # Refocussing, Flip Angle [°]
-#     refocus_angle: typing.List = sp.field(default_factory=lambda: [140.0])
-#     # Refocussing, Phase [°]
-#     refocus_phase: typing.List = sp.field(default_factory=lambda: [0.0])
-#     # Refocussing, gradient strength if rectangular/trapezoid [mt/m]
-#     gradient_refocus: float = -36.2
-#     # Refocussing, duration of pulse [us]
-#     duration_refocus: float = 3584.0
-#
-#     gradient_crush: float = -38.7  # [mT/m], crusher
-#     duration_crush: float = 1000.0  # [us], crushe
-#     gradient_acquisition: float = 0.0  # set automatically after settings init
-#
-#     # time for acquisition (of one pixel) * 1e6 <- [(px)s] * 1e6
-#
-#     def __post_init__(self):
-#         self.gamma_pi: float = self.gamma_hz * 2 * torch.pi
-#         self.duration_acquisition: float = 1e6 / self.bw  # [us]
-#         if self.refocus_phase.__len__() != self.refocus_angle.__len__():
-#             err = f"provide same amount of refocusing pulse angle ({self.refocus_angle.__len__()}) " \
-#                   f"and phases ({self.refocus_phase.__len__()})"
-#             logModule.error(err)
-#             raise AttributeError(err)
-#         # check for phase values
-#         for l_idx in range(self.refocus_phase.__len__()):
-#             while abs(self.refocus_phase[l_idx]) > 180.0:
-#                 self.refocus_phase[l_idx] = self.refocus_phase[l_idx] - torch.sign(self.refocus_phase[l_idx]) * 180.0
-#             while abs(self.refocus_angle[l_idx]) > 180.0:
-#                 self.refocus_angle[l_idx] = self.refocus_angle[l_idx] - torch.sign(self.refocus_angle[l_idx]) * 180.0
-#         while self.refocus_angle.__len__() < self.ETL:
-#             # fill up list with last value
-#             self.refocus_angle.append(self.refocus_angle[-1])
-#             self.refocus_phase.append(self.refocus_phase[-1])
+    def display(self):
+        # display via logging
+        df = pd.Series(self.to_dict())
+        # concat empty entry to start of series for nicer visualization
+        df = pd.concat([pd.Series([""], index=["___ Config ___"]), df])
+        # display
+        log_module.info(df)
 
 
 @dataclass
@@ -152,25 +99,29 @@ class SimulationSettings(sp.Serializable):
 @dataclass
 class SimulationParameters(sp.Serializable):
     config: SimulationConfig = SimulationConfig()
-    sequence: EmcParameters = EmcParameters()
+    sequence: pypsi.parameters.EmcParameters = pypsi.parameters.EmcParameters()
     settings: SimulationSettings = SimulationSettings()
 
     def __post_init__(self):
-        logModule.info(f"spatial sampling resolution: {self.settings.get_slice_profile_sample_resolution()*1e6:.2f} um"
-                       f"(per spin isochromat)")
-        logModule.info(f"spatial readout binning resolution across slcie profile:"
-                       f"{self.settings.get_slice_profile_bin_resolution()*1e6:.2f} um (contributions to readout)")
+        log_module.debug(
+            f"spatial sampling resolution: {self.settings.get_slice_profile_sample_resolution() * 1e6:.2f} um"
+            f"(per spin isochromat)"
+        )
+        log_module.debug(
+            f"spatial readout binning resolution across slice profile:"
+            f"{self.settings.get_slice_profile_bin_resolution() * 1e6:.2f} um (contributions to readout)"
+        )
         # gradient area = deltaK * n = 1/FOV * num_acquisition
         grad_area = 1 / (2 * self.settings.length_z) * self.settings.acquisition_number
         # grad_area in 1/m -> / gamma for T/m
-        grad_amp = grad_area / self.sequence.gamma_hz / self.sequence.duration_acquisition * 1e6    # cast to s
-        self.sequence.gradient_acquisition = - grad_amp * 1e3   # cast to mT
+        grad_amp = grad_area / self.sequence.gamma_hz / self.sequence.duration_acquisition * 1e6  # cast to s
+        self.sequence.gradient_acquisition = - grad_amp * 1e3  # cast to mT
 
     def set_acquisition_gradient(self):
         self.__post_init__()
 
     @classmethod
-    def from_cmd_args(cls, args: sp.ArgumentParser.parse_args):
+    def from_cli(cls, args: sp.ArgumentParser.parse_args):
         sim_params = SimulationParameters(config=args.config, settings=args.settings, sequence=args.sequence)
 
         non_default_config, non_default_settings, non_default_sequence = sim_params._check_non_default_vars()
@@ -196,7 +147,29 @@ class SimulationParameters(sp.Serializable):
             emc_seq_config = sim_params.config.emc_seq_config
             if args.config.emc_seq_config:
                 emc_seq_config = args.config.emc_seq_config
-            sim_params.sequence = EmcParameters.load(emc_seq_config)
+            sim_params.sequence = pypsi.parameters.EmcParameters.load(emc_seq_config)
+        # choose explicit emc config file over pypsi interface file
+        if (args.config.pypsi_path or sim_params.config.pypsi_path) and not sim_params.config.emc_seq_config:
+            pyp_path = sim_params.config.pypsi_path
+            if args.config.pypsi_path:
+                pyp_path = args.config.pypsi_path
+            pyp_interface = pypsi.Params.load(pyp_path)
+            sim_params.sequence = pyp_interface.emc
+
+        # sanity check pyp
+        if not sim_params.config.emc_seq_config:
+            if sim_params.config.pypsi_path:
+                o_path = plib.Path(sim_params.config.pypsi_path).absolute()
+            else:
+                err = f"neither direct emc config nor pypulseq interface file provided."
+                log_module.error(err)
+                raise FileNotFoundError(err)
+        else:
+            o_path = plib.Path(sim_params.config.emc_seq_config).absolute()
+            # if we have no output path set, use input of pypsi
+        # if we have no output path set, use input of pypsi or emc
+        if not sim_params.config.save_path:
+            sim_params.config.save_path = o_path.parent.as_posix().__str__()
         sim_params.set_acquisition_gradient()
         return sim_params
 
@@ -215,7 +188,7 @@ class SimulationParameters(sp.Serializable):
             if self.settings.__getattribute__(key) != def_settings.__getattribute__(key):
                 non_default_settings.__setitem__(key, value)
 
-        def_sequence = EmcParameters()
+        def_sequence = pypsi.parameters.EmcParameters()
         non_default_sequence = {}
         for key, value in vars(self.sequence).items():
             # catch post init attribute
@@ -233,7 +206,7 @@ class SimulationParameters(sp.Serializable):
         db_path = base_path.joinpath(self.config.database_name)
         config_path = base_path.joinpath(f"{db_path.stem}_config.json")
 
-        logModule.info(f"writing file {db_path}")
+        log_module.info(f"writing file {db_path}")
         # mode dependent on file ending given
         save_fn = {
             ".pkl": database.to_pickle,
@@ -243,7 +216,7 @@ class SimulationParameters(sp.Serializable):
                                             f"Supported: {list(save_fn.keys())}"
         save_fn.get(db_path.suffix)(db_path.__str__())
         # save used config
-        logModule.info(f"writing file {config_path}")
+        log_module.info(f"writing file {config_path}")
         self.save_json(config_path, indent=2, separators=(',', ':'))
 
 
@@ -320,7 +293,7 @@ class SimulationData:
         # (we get this in the end by calculation, no need to allocate for it and carry it through)
         emc_signal_mag = torch.zeros(
             (t1_vals.shape[0], t2_vals.shape[0], b1_vals.shape[0],
-            sim_params.sequence.etl),
+             sim_params.sequence.etl),
             device=device
         )
         emc_signal_phase = torch.zeros(
@@ -340,11 +313,11 @@ class SimulationData:
         # sanity checks
         if torch.max(self.t2_vals) > torch.min(self.t1_vals):
             err = 'T1 T2 mismatch (T2 > T1)'
-            logModule.error(err)
+            log_module.error(err)
             raise AttributeError(err)
         if torch.max(self.t2_vals) < 1e-4:
             err = 'T2 value range exceeded, make sure to post T2 in ms'
-            logModule.error(err)
+            log_module.error(err)
             raise AttributeError(err)
 
     def set_device(self, device: torch.device):
@@ -361,7 +334,7 @@ def create_cli():
     parser = sp.ArgumentParser(prog='emc_torch_sim')
     parser.add_arguments(SimulationConfig, dest="config")
     parser.add_arguments(SimulationSettings, dest="settings")
-    parser.add_arguments(EmcParameters, dest="sequence")
+    parser.add_arguments(pypsi.parameters.EmcParameters, dest="sequence")
 
     args = parser.parse_args()
 

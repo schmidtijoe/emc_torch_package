@@ -4,17 +4,17 @@ import numpy as np
 from emc_sim import options
 
 
-def pulseCalibrationIntegral(pulse: torch.tensor,
-                             delta_t: float,
-                             sim_params: options.SimulationParameters,
-                             excitation: bool,
-                             pulse_number: int = 0) -> torch.tensor:
+def pulse_calibration_integral(pulse: torch.tensor,
+                               delta_t: float,
+                               sim_params: options.SimulationParameters,
+                               excitation: bool,
+                               pulse_number: int = 0) -> torch.tensor:
     """
     Calibrates pulse waveform for given flip angle, adds phase if given
     """
     # get b1 values - error catch again if single value is given
     b1_vals = sim_params.settings.b1_list
-    if type(b1_vals) != list:
+    if not isinstance(b1_vals, list):
         b1_vals = [b1_vals]
     b1_vals = torch.tensor(b1_vals)
     # normalize
@@ -30,7 +30,7 @@ def pulseCalibrationIntegral(pulse: torch.tensor,
         phase = sim_params.sequence.refocus_phase[pulse_number - 1] / 180.0 * torch.pi
     angle_flip *= torch.pi / 180 * b1_vals  # calculate with applied actual flip angle offset
     b1_pulse_calibrated = b1_pulse[None, :] * (angle_flip[:, None] / flip_angle_normalized_b1) * \
-                        torch.exp(torch.tensor(1j * phase))
+                          torch.exp(torch.tensor(1j * phase))
     return b1_pulse_calibrated
 
 
@@ -67,8 +67,8 @@ def propagate_gradient_pulse_relax(
         iter_range = pulse_x.shape[1]
     for i in range(iter_range):
         prop_step = matrix_propagation_grad_pulse_multidim(
-                pulse_x=pulse_x[:, i], pulse_y=pulse_y[:, i], grad=grad[i], dt_s=dt_s, sim_data=sim_data
-            )
+            pulse_x=pulse_x[:, i], pulse_y=pulse_y[:, i], grad=grad[i], dt_s=dt_s, sim_data=sim_data
+        )
         # propagation_matrix = torch.matmul(
         #     prop_step,
         #     propagation_matrix
@@ -190,9 +190,9 @@ def sample_acquisition(etl_idx: int, sim_params: options.SimulationParameters, s
 
 
 def sum_sample_acquisition(etl_idx: int, sim_params: options.SimulationParameters, sim_data: options.SimulationData,
-                       acquisition_duration_s: torch.tensor):
-    # timing - relaxation half of acquisition
-    dt_a_half = acquisition_duration_s / 2     # cast to s
+                           acquisition_duration_s: torch.tensor):
+    # timing - relaxation half of acquisition til echo
+    dt_a_half = acquisition_duration_s / 2  # cast to s
     mat_prop_relax = matrix_propagation_relaxation_multidim(dt_s=dt_a_half, sim_data=sim_data)
     sim_data = propagate_matrix_mag_vector(mat_prop_relax, sim_data=sim_data)
     # sum contributions
@@ -202,10 +202,10 @@ def sum_sample_acquisition(etl_idx: int, sim_params: options.SimulationParameter
         sim_data.magnetization_propagation[:, :, :, :, 1], dim=-1)
     # emc tensor [t1s, t2s, b1s, etl]
     sim_data.emc_signal_mag[:, :, :, etl_idx] = 1e3 * torch.abs(mag_data_cmplx) * sim_params.settings.length_z / \
-                                                            sim_params.settings.sample_number
-    sim_data.emc_signal_phase[:, :, :, etl_idx] = 1e3 * torch.angle(mag_data_cmplx) * sim_params.settings.length_z / \
-                                                            sim_params.settings.sample_number
-    # relaxation rest of acquisition time
+                                                sim_params.settings.sample_number
+    sim_data.emc_signal_phase[:, :, :, etl_idx] = torch.angle(mag_data_cmplx)
+
+    # relaxation rest of acquisition time, from mid echo til end
     mat_prop_relax = matrix_propagation_relaxation_multidim(dt_s=dt_a_half, sim_data=sim_data)
     sim_data = propagate_matrix_mag_vector(mat_prop_relax, sim_data=sim_data)
     return sim_data
