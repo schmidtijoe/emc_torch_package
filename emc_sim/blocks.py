@@ -2,34 +2,9 @@
 from emc_sim import options, functions, plotting
 import logging
 import torch
+import numpy as np
 import pathlib as plib
-import pypsi
-
 log_module = logging.getLogger(__name__)
-
-
-class GPDetails:
-    duration_pulse: torch.tensor
-    grad_amp: torch.tensor
-    excitation_flag: bool
-    grad_crush_rephase: torch.tensor
-    duration_crush_rephase: torch.tensor
-
-    @classmethod
-    def get_gp_details(cls, params: options.SimulationParameters, excitation_flag: bool):
-        gp_instance = cls()
-        gp_instance.pypsi_path = plib.Path(params.config.pypsi_path).absolute()
-        if excitation_flag:
-            gp_instance.grad_crush_rephase = torch.tensor(params.sequence.gradient_excitation_rephase)
-            gp_instance.duration_crush_rephase = torch.tensor(params.sequence.duration_excitation_rephase)
-            gp_instance.duration_pulse = torch.tensor(params.sequence.duration_excitation)
-            gp_instance.grad_amp = torch.tensor(params.sequence.gradient_excitation)
-        else:
-            gp_instance.grad_crush_rephase = torch.tensor(params.sequence.gradient_crush)
-            gp_instance.duration_crush_rephase = torch.tensor(params.sequence.duration_crush)
-            gp_instance.duration_pulse = torch.tensor(params.sequence.duration_refocus)
-            gp_instance.grad_amp = torch.tensor(params.sequence.gradient_refocus)
-        return gp_instance
 
 
 class GradPulse:
@@ -37,23 +12,16 @@ class GradPulse:
                  pulse_type: str = 'Excitation',
                  pulse_number: int = 0,
                  num_sampling_points: int = 512,
-                 dt_sampling_steps: float = 5.0,
-                 duration: float = 0.0):
+                 dt_sampling_steps_us: float = 5.0,
+                 duration_us: float = 0.0):
         self.pulse_number = pulse_number
         self.pulse_type = pulse_type
         self.num_sampling_points = num_sampling_points
-        self.dt_sampling_steps = dt_sampling_steps
+        self.dt_sampling_steps_us = dt_sampling_steps_us
         self.data_grad = torch.zeros(0)
         self.data_pulse_x = torch.zeros(0)
         self.data_pulse_y = torch.zeros(0)
-        self.excitation_flag: bool = True
-        # self.params = params
-        # if sim_temp_data is not None:
-        #     self.temp_data = sim_temp_data
-        # else:
-        #     self.temp_data = options.SimTempData(sim_params=params)
-        self.duration = duration
-        self.gp_details: GPDetails = GPDetails()
+        self.duration_us = duration_us
 
         # set and check
         self._set_exci_flag()
@@ -75,203 +43,203 @@ class GradPulse:
         self.data_pulse_y = self.data_pulse_y.to(dtype=torch.float32)
 
     @classmethod
-    def prep_grad_pulse(cls, pulse_type: str = 'Excitation', pulse_number: int = 0, sym_spoil: bool = True,
-                        params: options.SimulationParameters = options.SimulationParameters(), orig_mese: bool = True):
-        if orig_mese:
-            # nothing changes
-            pre_read_grad_amp = 0.0
-        else:
-            # if not original sequence schemes, the readouts are prephased and rephased
-            # while spoiling takes place, in negative direction
-            # calculate readout prephasing area necessary
-            pre_read_area = - params.sequence.duration_acquisition * params.sequence.gradient_acquisition / 2.0
-            # calculate amplitude added to spoiling, dependent on duration of spoiling
-            pre_read_grad_amp = pre_read_area / params.sequence.duration_crush
+    def prep_grad_pulse_excitation(cls, params: options.SimulationParameters):
+        log_module.debug(f"prep excitation pulse")
 
-        # -- prep pulse
-        log_module.debug(f'prep pulse {pulse_type}; # {pulse_number}')
-        grad_pulse = cls(pulse_type=pulse_type, pulse_number=pulse_number)
-        # set flag
-        excitation_flag: bool = (pulse_number == 0) & (pulse_type == 'Excitation')
-        # get duration & grad pulse details
-        gp_details = GPDetails.get_gp_details(params=params, excitation_flag=excitation_flag)
-        # read rf
-        pypsi_params = pypsi.Params().load(params.config.pypsi_path)
-        rf = pypsi_params.pulse
-        # rf = .pulse.load(gp_details.pypsi_path)
+        params = cls._set_pulse(params=params, duration_us=params.sequence.duration_excitation)
 
-        if abs(rf.duration_in_us - gp_details.duration_pulse) > 1e-5:
-            rf.resample_to_duration(duration_in_us=int(gp_details.duration_pulse))
-        pulse = torch.from_numpy(rf.amplitude) * torch.exp(torch.from_numpy(1j * rf.phase))
-
-        # calculate and normalize
+        # calculate and normalize - pulse dims [b1, t]
         pulse_from_pypsi = functions.pulse_calibration_integral(
-            pulse=pulse,
-            delta_t=rf.get_dt_sampling_in_us(),
-            pulse_number=pulse_number,
             sim_params=params,
-            excitation=excitation_flag)
-
-        # ToDo: attention: prephasing artificial read!
-        if not excitation_flag:
-            # add prephasing readout if set - only applies to refocusing pulses with sym spoiling.
-            # not applies to excitation pulses with sym spoiling
-            gp_details.grad_crush_rephase += pre_read_grad_amp
-
-        if sym_spoil:
-            # symmetric spoiling, use spoiling grads after and before
-            grad_prewind = gp_details.grad_crush_rephase
-            duration_prewind = gp_details.duration_crush_rephase
-        else:
-            grad_prewind = 0.0
-            duration_prewind = 0.0
-
-        # build parts of pulse gradient
-        grad, pulse, duration, area_grad = cls.build_pulse_grad_shapes(
-            gp_details=gp_details,
-            pulse=pulse_from_pypsi,
-            duration_pre=duration_prewind,
-            grad_amp_pre=grad_prewind
+            excitation=True
         )
-        if params.config.signal_fourier_sampling:
-            # We did change the excitation pulse to play a prephasing z gradient for the virtual k-space readout.
-            # this relies on perfect 180 deg pulses and hence changes the acquisition phase with b1 offset
-            # even though it is virtual only - this makes sense in the original siemens mese scheme as this
-            # relies on perfect b1 also for the readout gradient - lets us estimate phase offset thus created
-            if grad_pulse.excitation_flag & orig_mese:
-                # Simulation is based on moving the acquisition process (hence gradient) artificially to
-                # z-axis along the slice
-                # Therefore we need to do a couple of things artificially:
 
+        log_module.debug(f"\t PULSE + GRAD")
+
+        gradient_read_pre_phase = 0.0
+        if params.config.signal_fourier_sampling:
+            # we want to sample the signal via a readout gradient (artificially moved into 1D slice),
+            # and need to prephase this readout in the excitation rephasing in case we are using
+            # the siemens mese sequence
+            if params.config.sim_type == "mese_siemens":
                 # when acquiring in k-space along the slice we need to move the k-space start to the corner of k-space
                 # i.e.: prephase half an acquisition gradient moment, put it into the rephase timing
-                gradient_pre_phase = params.sequence.gradient_acquisition * params.sequence.duration_acquisition / \
+                gradient_read_pre_phase = params.sequence.gradient_acquisition * params.sequence.duration_acquisition / \
                                      (2 * params.sequence.duration_excitation_rephase)
+                # the refocusing will then move to the opposite side of k-space
 
-                # the crushers are placed symmetrically about the refocusing pulses,
-                # hence are cancelling each others k-space phase. We need to make sure that the crushers are balanced.
-                # For timing reasons there is no crusher before the first refocusing pulse in the sequence.
-                # We move one into the rephase space of the excitation
-                # ToDo: does this make sense actually? sequence is designed already to balance the first crusher with
-                #  the rephasing -> hence this is already meant to be the sum of both
-                gradient_excitation_crush = params.sequence.gradient_crush * params.sequence.duration_crush / \
-                                            params.sequence.duration_excitation_rephase
-
-                # When exciting with a slice selective gradient the gradient creates phase offset along the slice axis.
-                # We want to rephase this phase offset
-                # (as is the original use of the gradient in the acquisition scheme).
-                # However, the rephasing gradient is usually used with half the gradient moment area (at 90° pulses),
-                # which is not quite accurate.
-                # After investigation a manual correction term can be put in here for accuracy * 1.038
-                # ToDo: see above, we basically recalculate the rephasing gradient that was there
-                #  in the sequence already,
-                #  can double check if it has the same amplitude!
-                gradient_excitation_phase_rewind = - area_grad / (2 * params.sequence.duration_excitation_rephase)
-
-                # The gradient pulse scheme needs to be re-done with accommodating those changes in the
-                # rephase gradient of the excitation
-                gp_details.grad_crush_rephase = torch.div(
-                    gradient_pre_phase + gradient_excitation_crush + gradient_excitation_phase_rewind,
-                    params.sequence.duration_excitation_rephase
-                )
-                grad, pulse, duration, area_grad = cls.build_pulse_grad_shapes(
-                    gp_details=gp_details,
-                    pulse=pulse_from_pypsi,
-                    duration_pre=duration_prewind,
-                    grad_amp_pre=grad_prewind)
-
+        grad, pulse, duration, area_grad = cls.build_pulse_grad_shapes(
+            pulse=pulse_from_pypsi, grad_amp_slice_select=params.sequence.gradient_excitation,
+            duration_pulse_slice_select_us=params.sequence.duration_excitation,
+            grad_amp_post=params.sequence.gradient_excitation_rephase + gradient_read_pre_phase,
+            duration_post_us=params.sequence.duration_excitation_rephase,
+        )
+        # grad dim [dt], pulse dim [b1, dt]
         # assign vars
-        grad_pulse.num_sampling_points = rf.num_samples
-        grad_pulse.dt_sampling_steps = rf.get_dt_sampling_in_us()
-        grad_pulse.data_grad = grad
-        grad_pulse.data_pulse_x = pulse.real
-        grad_pulse.data_pulse_y = pulse.imag
-        grad_pulse.duration = rf.duration_in_us
+        grad_pulse = cls(
+            pulse_number=0, pulse_type="Excitation",
+            num_sampling_points=pulse_from_pypsi.shape[-1],
+            dt_sampling_steps_us=params.sequence.duration_excitation / pulse_from_pypsi.shape[-1],
+            duration_us=params.sequence.duration_excitation
+        )
+        grad_pulse.assign_data(grad=grad, pulse_cplx=pulse)
+        return grad_pulse
 
-        grad_pulse._set_float32()
+    @classmethod
+    def prep_grad_pulse_refocus(cls, params: options.SimulationParameters, refocus_pulse_number: int):
+        log_module.debug(f"prep refocusing pulse: {refocus_pulse_number + 1}")
+        # -- prep pulse
+        params = cls._set_pulse(params=params, duration_us=params.sequence.duration_refocus)
+        # calculate and normalize
+        pulse_from_pypsi = functions.pulse_calibration_integral(
+            sim_params=params,
+            excitation=False,
+            refocusing_pulse_number=refocus_pulse_number
+        )
+
+        log_module.debug(f"\t PULSE + GRAD")
+        gradient_read_pre_phase = 0.0
+        if params.config.signal_fourier_sampling:
+            # we want to sample the signal via a readout gradient (artificially moved into 1D slice),
+            # and need to prephase this readout in the excitation rephasing in case we are using
+            # the siemens mese sequence
+            if not params.config.sim_type == "mese_siemens":
+                # when acquiring in k-space along the slice we need to move the k-space start to the corner of k-space
+                # i.e.: prephase half an acquisition gradient moment, put it into the refocusing crusher timing
+                gradient_read_pre_phase =  (
+                        - params.sequence.gradient_acquisition * params.sequence.duration_acquisition /
+                        (2 * params.sequence.duration_crush)
+                )
+                # in the balanced version the read gradient is prephased during end of refocusing, then read,
+                # then rephased to 0 before next refocussing pulse, hence it must be added to both lobes (pre & post)
+
+        gradient_slice_pre = params.sequence.gradient_crush
+        duration_slice_pre = params.sequence.duration_crush
+        if refocus_pulse_number == 0:
+            # on first refocusing pulse we dont need the symmetrical slice gradients
+            # since its included in the rephaser of the excitation pulse
+            gradient_slice_pre = 0.0
+            duration_slice_pre = 0.0
+
+        # build
+        grad, pulse, duration, area_grad = cls.build_pulse_grad_shapes(
+            pulse=pulse_from_pypsi, grad_amp_slice_select=params.sequence.gradient_refocus,
+            duration_pulse_slice_select_us=params.sequence.duration_refocus,
+            grad_amp_post=params.sequence.gradient_crush + gradient_read_pre_phase,
+            duration_post_us=params.sequence.duration_crush,
+            grad_amp_pre=gradient_slice_pre + gradient_read_pre_phase,
+            duration_pre_us=duration_slice_pre
+        )
+        # assign vars
+        grad_pulse = cls(
+            pulse_type="Refocus", pulse_number=refocus_pulse_number,
+            num_sampling_points=pulse_from_pypsi.shape[-1],
+            dt_sampling_steps_us=params.sequence.duration_refocus / pulse_from_pypsi.shape[-1],
+            duration_us=params.sequence.duration_refocus
+        )
+        grad_pulse.assign_data(grad=grad, pulse_cplx=pulse)
         return grad_pulse
 
     @staticmethod
+    def _set_pulse(params: options.SimulationParameters, duration_us: float):
+        log_module.debug(f"\t RF")
+        # check rf and given sim details
+        if np.abs(params.pulse.duration_in_us - duration_us) > 1e-5:
+            params.pulse.resample_to_duration(duration_in_us=int(duration_us))
+        # resample pulse to given dt in us for more efficient computation
+        if np.abs(params.pulse.get_dt_sampling_in_us() - params.config.resample_pulse_to_dt_us) > 1.0:
+            params.pulse.set_shape_on_raster(raster_time_s=params.config.resample_pulse_to_dt_us * 1e-6)
+        return params
+
+    @staticmethod
     def build_pulse_grad_shapes(
-            gp_details: GPDetails, pulse: torch.tensor, duration_pre: float, grad_amp_pre: float):
+            pulse: torch.tensor, grad_amp_slice_select: float, duration_pulse_slice_select_us: float,
+            grad_amp_post: float, duration_post_us: float,
+            duration_pre_us: float = 0.0, grad_amp_pre: float = 0.0):
         """ want to build the shapes given slice gradient pre, spoil and slice select and align it to the given pulse"""
         # grad amplitudes are values, pulse is a shape already with complex numbers and
         # distributed across different b1 values -> pulse dim [# b1, # pulse sampling steps]
-        if abs(grad_amp_pre) < 1e-5:
-            duration_pre = 1
-        duration_pre = torch.full(size=(1,), fill_value=duration_pre)
+
+        # check if we have pre gradient
+        if np.abs(grad_amp_pre) < 1e-5:
+            duration_pre_us = 0
+        duration_pre_us = torch.full(size=(1,), fill_value=duration_pre_us)
         grad_amp_pre = torch.full(size=(1,), fill_value=grad_amp_pre)
+        # set number of samplings for pulse
         num_sample_pulse = pulse.shape[1]
-        dt_us = gp_details.duration_pulse / num_sample_pulse
+        dt_us = duration_pulse_slice_select_us / num_sample_pulse
         # calculate total number of sampling points
+        # pre gradient
         num_sample_pre = torch.nan_to_num(torch.div(
-            duration_pre, dt_us, rounding_mode="trunc"
+            duration_pre_us, dt_us, rounding_mode="trunc"
         )).type(torch.int)
+        # post gradient
         num_sample_crush = torch.nan_to_num(torch.div(
-            gp_details.duration_crush_rephase, dt_us, rounding_mode="trunc"
+            duration_post_us, dt_us, rounding_mode="trunc"
         )).type(torch.int)
+        # total number
         num_sample_total = num_sample_pre + num_sample_pulse + num_sample_crush
         # allocate tensors
         grad_amp = torch.zeros(num_sample_total)
         pulse_amp = torch.zeros((pulse.shape[0], num_sample_total), dtype=torch.complex128)
         # fill
         grad_amp[:num_sample_pre] = grad_amp_pre
-        grad_amp[num_sample_pre:num_sample_pre + num_sample_pulse] = gp_details.grad_amp
-        grad_amp[num_sample_pre + num_sample_pulse:] = gp_details.grad_crush_rephase
+        grad_amp[num_sample_pre:num_sample_pre + num_sample_pulse] = grad_amp_slice_select
+        grad_amp[num_sample_pre + num_sample_pulse:] = grad_amp_post
         pulse_amp[:, num_sample_pre:num_sample_pre + num_sample_pulse] = pulse
         t_total = num_sample_total * dt_us
         return grad_amp, pulse_amp, t_total, torch.sum(
             grad_amp[num_sample_pre:num_sample_pre + num_sample_pulse]) * dt_us
 
-    @classmethod
-    def prep_single_grad_pulse(cls, params: options.SimulationParameters = options.SimulationParameters(),
-                               excitation_flag: bool = True,
-                               grad_rephase_factor: float = 1.0):
-        # -- prep pulse
-        pulse_type: str = 'Excitation'  # just set it
-        log_module.debug(f'prep pulse {pulse_type}; # {0}')
-        grad_pulse = cls(pulse_type=pulse_type, pulse_number=0)
-        # read file
-        # get duration & grad pulse defaults
-        gp_details = GPDetails.get_gp_details(params=params, excitation_flag=excitation_flag)
-        gp_details.grad_crush_rephase *= grad_rephase_factor
-        if grad_rephase_factor < 1e-3:
-            gp_details.duration_crush_rephase = 0.0
-        # read rf
-        rf = pypsi.Params.pulse.load(gp_details.pypsi_path)
-        duration_pulse = params.sequence.duration_excitation
-
-        if abs(rf.duration_in_us - duration_pulse) > 1e-5:
-            # resample pulse
-            rf.resample_to_duration(duration_in_us=int(duration_pulse))
-
-        pulse = torch.from_numpy(rf.amplitude) * torch.exp(torch.from_numpy(1j * rf.phase))
-        # calculate and normalize
-        pulse_from_pypsi = functions.pulse_calibration_integral(
-            pulse=pulse,
-            delta_t=rf.get_dt_sampling_in_us(),
-            pulse_number=0,
-            sim_params=params,
-            excitation=True)
-
-        # build verse pulse gradient
-        grad, pulse, duration, area_grad = cls.build_pulse_grad_shapes(
-            gp_details=gp_details,
-            pulse=pulse_from_pypsi,
-            duration_pre=0.0,
-            grad_amp_pre=0.0
-        )
-
-        # assign vars
-        grad_pulse.num_sampling_points = rf.num_samples
-        grad_pulse.dt_sampling_steps = rf.get_dt_sampling_in_us()
-        grad_pulse.data_grad = grad
-        grad_pulse.data_pulse_x = pulse.real
-        grad_pulse.data_pulse_y = pulse.imag
-        grad_pulse.duration = rf.duration_in_us
-
-        grad_pulse._set_float32()
-        return grad_pulse
+    # @classmethod
+    # def prep_single_grad_pulse(cls, params: options.SimulationParameters = options.SimulationParameters(),
+    #                            excitation_flag: bool = True,
+    #                            grad_rephase_factor: float = 1.0):
+    #     # -- prep pulse
+    #     pulse_type: str = 'Excitation'  # just set it
+    #     log_module.debug(f'prep pulse {pulse_type}; # {0}')
+    #     grad_pulse = cls(pulse_type=pulse_type, pulse_number=0)
+    #     # read file
+    #     # get duration & grad pulse defaults
+    #     gp_details = GPDetails.get_gp_details(params=params, excitation_flag=excitation_flag)
+    #     gp_details.grad_crush_rephase *= grad_rephase_factor
+    #     if grad_rephase_factor < 1e-3:
+    #         gp_details.duration_crush_rephase = 0.0
+    #     # read rf
+    #     rf = pypsi.Params.pulse.load(gp_details.pypsi_path)
+    #     duration_pulse = params.sequence.duration_excitation
+    #
+    #     if abs(rf.duration_in_us - duration_pulse) > 1e-5:
+    #         # resample pulse
+    #         rf.resample_to_duration(duration_in_us=int(duration_pulse))
+    #
+    #     pulse = torch.from_numpy(rf.amplitude) * torch.exp(torch.from_numpy(1j * rf.phase))
+    #     # calculate and normalize
+    #     pulse_from_pypsi = functions.pulse_calibration_integral(
+    #         pulse=pulse,
+    #         delta_t_us=rf.get_dt_sampling_in_us(),
+    #         pulse_number=0,
+    #         sim_params=params,
+    #         excitation=True)
+    #
+    #     # build verse pulse gradient
+    #     grad, pulse, duration, area_grad = cls.build_pulse_grad_shapes(
+    #         gp_details=gp_details,
+    #         pulse=pulse_from_pypsi,
+    #         duration_pre_us=0.0,
+    #         grad_amp_pre=0.0
+    #     )
+    #
+    #     # assign vars
+    #     grad_pulse.num_sampling_points = rf.num_samples
+    #     grad_pulse.dt_sampling_steps = rf.get_dt_sampling_in_us()
+    #     grad_pulse.data_grad = grad
+    #     grad_pulse.data_pulse_x = pulse.real
+    #     grad_pulse.data_pulse_y = pulse.imag
+    #     grad_pulse.duration = rf.duration_in_us
+    #
+    #     grad_pulse._set_float32()
+    #     return grad_pulse
 
     @classmethod
     def prep_acquisition(cls, params: options.SimulationParameters = options.SimulationParameters()):
@@ -279,7 +247,7 @@ class GradPulse:
         dt_sampling_steps = params.sequence.duration_acquisition / params.settings.acquisition_number
 
         grad_pulse = cls(pulse_type='Acquisition', pulse_number=0, num_sampling_points=1,
-                         dt_sampling_steps=dt_sampling_steps)
+                         dt_sampling_steps_us=dt_sampling_steps)
         # assign data
         grad_pulse.data_grad = torch.linspace(
             params.sequence.gradient_acquisition,
@@ -292,10 +260,18 @@ class GradPulse:
         grad_pulse._set_float32()
         return grad_pulse
 
-    def plot(self, sim_data: options.SimulationData):
+    def assign_data(self, grad: torch.tensor, pulse_cplx: torch.tensor):
+        self.data_grad = grad
+        self.data_pulse_x = pulse_cplx.real
+        self.data_pulse_y = pulse_cplx.imag
+
+        self._set_float32()
+
+    def plot(self, sim_data: options.SimulationData, fig_path: str | plib.Path):
         plotting.plot_grad_pulse(
             px=self.data_pulse_x, py=self.data_pulse_y,
             g=self.data_grad, b1_vals=sim_data.b1_vals,
+            out_path=fig_path,
             name=f"{self.pulse_type}-{self.pulse_number}"
         )
 

@@ -29,7 +29,7 @@ if __name__ == '__main__':
 
     opts = options.SimulationParameters.from_cli(prog_args)
     # set logging level after possible config file read
-    if opts.config.debug_flag:
+    if opts.config.debug:
         logging.getLogger().setLevel(logging.DEBUG)
 
     try:

@@ -2,13 +2,12 @@ import torch
 from scipy import stats
 import numpy as np
 from emc_sim import options
+from pypsi.parameters import RFParameters
 
 
-def pulse_calibration_integral(pulse: torch.tensor,
-                               delta_t: float,
-                               sim_params: options.SimulationParameters,
+def pulse_calibration_integral(sim_params: options.SimulationParameters,
                                excitation: bool,
-                               pulse_number: int = 0) -> torch.tensor:
+                               refocusing_pulse_number: int = 0) -> torch.tensor:
     """
     Calibrates pulse waveform for given flip angle, adds phase if given
     """
@@ -17,20 +16,19 @@ def pulse_calibration_integral(pulse: torch.tensor,
     if not isinstance(b1_vals, list):
         b1_vals = [b1_vals]
     b1_vals = torch.tensor(b1_vals)
-    # normalize
-    b1_pulse = pulse / torch.norm(pulse)
-    # integrate (discrete steps) total flip angle achieved with the normalized pulse
-    flip_angle_normalized_b1 = torch.sum(torch.abs(b1_pulse * sim_params.sequence.gamma_pi)) * delta_t * 1e-6
     if excitation:
         angle_flip = sim_params.sequence.excitation_angle
         phase = sim_params.sequence.excitation_phase / 180.0 * torch.pi
     else:
         # excitation pulse always 0th pulse
-        angle_flip = sim_params.sequence.refocus_angle[pulse_number - 1]
-        phase = sim_params.sequence.refocus_phase[pulse_number - 1] / 180.0 * torch.pi
-    angle_flip *= torch.pi / 180 * b1_vals  # calculate with applied actual flip angle offset
-    b1_pulse_calibrated = b1_pulse[None, :] * (angle_flip[:, None] / flip_angle_normalized_b1) * \
-                          torch.exp(torch.tensor(1j * phase))
+        angle_flip = sim_params.sequence.refocus_angle[refocusing_pulse_number - 1]
+        phase = sim_params.sequence.refocus_phase[refocusing_pulse_number - 1] / 180.0 * torch.pi
+    # calculate with applied actual flip angle offset
+    sim_params.pulse.set_flip_anlge(flip_angle_rad=angle_flip / 180 * torch.pi)
+    b1_pulse = torch.from_numpy(sim_params.pulse.amplitude) * torch.exp(
+        1j * (torch.from_numpy(sim_params.pulse.phase) + phase)
+    )
+    b1_pulse_calibrated = b1_pulse[None, :] * b1_vals[:, None]
     return b1_pulse_calibrated
 
 
@@ -54,10 +52,20 @@ def propagate_gradient_pulse_relax(
         grad: torch.tensor,
         sim_data: options.SimulationData,
         dt_s: torch.tensor) -> torch.tensor:
+    """
+    Calculating the effect of grad pulse data on magnetization propagation through iterative matrix multiplication
+    :param pulse_x: torch tensor holding x dimension data of pulse - dim [b1, dt]
+    :param pulse_y: torch tensor holding y dimension data of pulse - dim [b1, dt]
+    :param grad: torch tensor holding slice gradient amplitude data - dim [dt]
+    :param sim_data: simulation data object carrying simulation values through sim
+    :param dt_s: torch tensor holding sampling step size in seconds
+    :return:
+    """
     # get pulse matrices per step and propagate
     # iterate through the pulse grad shape and multiply the matrix propagators
     # dims [num_t1s, num_t2s, num_b1s, num_samples, 4, 4]
-    # propagation_matrix = torch.eye(4)[None, None, None, None].to(sim_data.device)
+    # check if dimensions are right, assumed dimensions given in doc string, if pulse data is for 1 b1 value only,
+    # we can fix tensor dimensions
     if torch.prod(torch.tensor(pulse_x.shape)) < 2:
         iter_range = 1
         if pulse_x.shape.__len__() < 2:
@@ -65,6 +73,7 @@ def propagate_gradient_pulse_relax(
             pulse_y = pulse_y[None, :]
     else:
         iter_range = pulse_x.shape[1]
+    # iterate through time points
     for i in range(iter_range):
         prop_step = matrix_propagation_grad_pulse_multidim(
             pulse_x=pulse_x[:, i], pulse_y=pulse_y[:, i], grad=grad[i], dt_s=dt_s, sim_data=sim_data

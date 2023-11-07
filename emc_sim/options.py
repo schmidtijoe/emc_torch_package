@@ -20,27 +20,32 @@ class SimulationConfig(sp.Serializable):
         Configuration for simulation
         """
     # provide Configuration file (.json)
-    config_file: str = sp.field(alias=["-c"], default="")
-    # provide separate sequence params
-    emc_seq_config: str = sp.field(alias=["-esc"], default="")
-    # set path to save database and used config
-    save_path: str = sp.field(alias=["-s"], default="")
-    # set filename of database
-    database_name: str = sp.field(alias=["-db"], default="database_test.pkl")
+    config_file: str = sp.field(alias="-c", default="")
     # set filepath to interface
-    pypsi_path: str = sp.field(alias=["-p"], default="./tests/pypsi_mese_test.pkl")
+    pypsi_path: str = sp.field(alias="-p", default="./tests/pypsi_mese_test.pkl")
+    # provide separate sequence params (optional if no pypsi interface available)
+    emc_seq_file: str = sp.field(alias="-oemc", default="")
+    # provide separate pulse class (optional if no pypsi interface available)
+    pulse_file: str = sp.field(alias="-opul", default="")
+    # set path to save database and used config
+    save_path: str = sp.field(alias="-s", default="")
+    # set filename of database
+    database_name: str = sp.field(alias="-db", default="database_test.pkl")
     # set simulation type
-    sim_type: str = sp.field(alias="-t", default="mese", choices=["mese", "megesse", "fid", "single"])
+    sim_type: str = sp.field(alias="-t", default="mese_balanced_read",
+                             choices=["mese_siemens", "mese_balanced_read", "megesse", "fid", "single"])
 
     # set signal echo processing -> this enables sampling the signal over the 1d slice dimension
     # substituting the readout and using identical readout time etc.
     # when turned off the spin contributions are summed across the profile
-    signal_fourier_sampling: bool = sp.field(alias="-sfs", default=True)
+    signal_fourier_sampling: bool = sp.field(alias="-sfs", default=False)
 
     # set flag to visualize pulse profiles and sequence scheme
-    visualize: bool = True
+    visualize: bool = sp.field(alias="-v", default=True)
     # toggle debugging log
-    debug_flag: bool = True
+    debug: bool = False
+    # resample pulse to lower number (duration over dt) for more efficient computations
+    resample_pulse_to_dt_us: float = sp.field(alias="-rptdt", default=5.0)
 
     # toggle multithreading
     # multiprocessing: bool = False
@@ -100,6 +105,7 @@ class SimulationSettings(sp.Serializable):
 class SimulationParameters(sp.Serializable):
     config: SimulationConfig = SimulationConfig()
     sequence: pypsi.parameters.EmcParameters = pypsi.parameters.EmcParameters()
+    pulse: pypsi.parameters.RFParameters = pypsi.parameters.RFParameters()
     settings: SimulationSettings = SimulationSettings()
 
     def __post_init__(self):
@@ -143,33 +149,48 @@ class SimulationParameters(sp.Serializable):
         # eg. to overwrite an instance (containing non-default values) loaded by a configFile
         # and explicitly trying to change entries to default via cmd input.
         # ToDo: Fix explicit cmd line input
-        if args.config.emc_seq_config or sim_params.config.emc_seq_config:
-            emc_seq_config = sim_params.config.emc_seq_config
-            if args.config.emc_seq_config:
-                emc_seq_config = args.config.emc_seq_config
-            sim_params.sequence = pypsi.parameters.EmcParameters.load(emc_seq_config)
-        # choose explicit emc config file over pypsi interface file
-        if (args.config.pypsi_path or sim_params.config.pypsi_path) and not sim_params.config.emc_seq_config:
+        pypsi_set = False
+        o_path_from_pyp = False
+        o_path = sim_params.config.save_path
+        if args.config.save_path:
+            o_path = args.config.save_path
+        # pypsi interface file
+        if args.config.pypsi_path or sim_params.config.pypsi_path:
             pyp_path = sim_params.config.pypsi_path
             if args.config.pypsi_path:
                 pyp_path = args.config.pypsi_path
+            log_module.debug(f"load pypsi interface file {pyp_path}")
             pyp_interface = pypsi.Params.load(pyp_path)
             sim_params.sequence = pyp_interface.emc
+            sim_params.pulse = pyp_interface.pulse
+            pypsi_set = True
+            # if no output path provided use pypsi path
+            if not o_path:
+                sim_params.config.save_path = plib.Path(pyp_path).absolute().parent.as_posix()
+                o_path_from_pyp = True
 
-        # sanity check pyp
-        if not sim_params.config.emc_seq_config:
-            if sim_params.config.pypsi_path:
-                o_path = plib.Path(sim_params.config.pypsi_path).absolute()
+        # if explicit optional emc config file or pulse file given: overwrite,
+        # cli argument is taken over config file argument
+        attrs = {
+            "emc_seq_file": {"attr": "sequence", "loader": pypsi.parameters.EmcParameters.load},
+            "pulse_file": {"attr": "pulse", "loader": pypsi.parameters.RFParameters.load}
+        }
+        for arg in attrs.keys():
+            if args.config.__getattribute__(arg) or sim_params.config.__getattribute__(arg):
+                file = sim_params.config.__getattribute__(arg)
+                if args.config.__getattribue__(arg):
+                    file = args.config.__getattribute__(arg)
+                sim_params.__setattr__(attrs[arg]["attr"], attrs[arg]["loader"](file))
+                # if emc provided explicitely and save path deduced from pypsi, change to emc path
+                if arg == "emc_seq_file":
+                    if o_path_from_pyp:
+                        sim_params.config.save_path = plib.Path(file).absolute().parent.as_posix()
             else:
-                err = f"neither direct emc config nor pypulseq interface file provided."
-                log_module.error(err)
-                raise FileNotFoundError(err)
-        else:
-            o_path = plib.Path(sim_params.config.emc_seq_config).absolute()
-            # if we have no output path set, use input of pypsi
-        # if we have no output path set, use input of pypsi or emc
-        if not sim_params.config.save_path:
-            sim_params.config.save_path = o_path.parent.as_posix().__str__()
+                if not pypsi_set:
+                    err = f"neither direct {arg} nor pypulseq interface file provided."
+                    log_module.error(err)
+                    raise FileNotFoundError(err)
+
         sim_params.set_acquisition_gradient()
         return sim_params
 
@@ -290,7 +311,6 @@ class SimulationData:
 
         # allocate
         # set emc data tensor -> dims: [t1s, t2s, b1s, ETL]
-        # (we get this in the end by calculation, no need to allocate for it and carry it through)
         emc_signal_mag = torch.zeros(
             (t1_vals.shape[0], t2_vals.shape[0], b1_vals.shape[0],
              sim_params.sequence.etl),
@@ -343,5 +363,9 @@ def create_cli():
 
 if __name__ == '__main__':
     params = SimulationParameters()
-    path = plib.Path("tests/default.json").absolute()
+    pyp_path = plib.Path("./tests/pypsi_mese_test.pkl").absolute()
+    pyp_interface = pypsi.Params.load(pyp_path.as_posix())
+    params.sequence = pyp_interface.emc
+    params.pulse = pyp_interface.pulse
+    path = plib.Path("./tests/emc_config.json").absolute()
     params.save_json(path.as_posix(), indent=2, separators=(',', ':'))
