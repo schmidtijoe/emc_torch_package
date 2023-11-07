@@ -1,15 +1,18 @@
+import pandas as pd
 import plotly.graph_objects as go
 import plotly.subplots as psub
 from plotly.express.colors import sample_colorscale
+import plotly.express as px
 from emc_sim import options
 import torch
 import numpy as np
 import logging
+import pathlib as plib
+log_module = logging.getLogger(__name__)
 
-logModule = logging.getLogger(__name__)
 
-
-def plot_grad_pulse(px: torch.tensor, py: torch.tensor, g:torch.tensor, b1_vals: torch.tensor, name: str = ""):
+def plot_grad_pulse(px: torch.tensor, py: torch.tensor, g: torch.tensor, b1_vals: torch.tensor,
+                    out_path: plib.Path | str, name: str):
     x_ax = torch.arange(px.shape[1])
     p_cplx = px + 1j * py
     p_abs = torch.abs(p_cplx)
@@ -39,7 +42,10 @@ def plot_grad_pulse(px: torch.tensor, py: torch.tensor, g:torch.tensor, b1_vals:
     fig['layout']['yaxis2']['title']['text'] = "phase [pi]"
     fig['layout']['yaxis3']['title']['text'] = "gradient [mT/m]"
 
-    fig.write_html(f'./tests/grad_pulse_{name}.html')
+    out_path = plib.Path(out_path).absolute()
+    fig_file = out_path.joinpath(f"plot_grad_pulse_{name}").with_suffix(".html")
+    log_module.info(f"writing file: {fig_file.as_posix()}")
+    fig.write_html(fig_file.as_posix())
 
 
 def plot_signal_traces(sim_data: options.SimulationData):
@@ -133,26 +139,42 @@ def plot_emc_sim_data(sim_data: options.SimulationData):
     fig.write_html(f'./tests/emc_signal.html')
 
 
-def plot_magnetization(sim_data: options.SimulationData, id: int):
-    plot_mag = sim_data.magnetization_propagation[0, 0, 0].clone().detach().cpu()
-    axis = sim_data.sample_axis.clone().detach().cpu()
-    fig = psub.make_subplots(rows=2, cols=1)
-    labels = ["x", "y", "z", "e", "abs xy"]
-    colors = sample_colorscale('viridis', np.linspace(0.9, 0.1, 5))
-    fig.add_trace(
-        go.Scatter(x=axis, y=torch.norm(plot_mag[:, :2], dim=1),
-                   name=f"mag_{labels[-1]} init",
-                   line=dict(color=colors[-1]), fill='tozeroy'),
-        row=1, col=1
-    )
-    for k in range(4):
-        fig.add_trace(
-            go.Scatter(x=axis, y=plot_mag[:, k],
-                       name=f"mag_{labels[k]} init",
-                       line=dict(color=colors[k])),
-            row=1, col=1
+def plot_magnetization(mag_profile_df: pd.DataFrame, out_path: plib.Path | str, animate: bool = False,
+                       slice_thickness_mm: float = 0.0, name: str = ""):
+    if animate:
+        fig = px.line(
+            data_frame=mag_profile_df, x="sample_axis", y="mag_profile", color="dim", animation_frame="name"
         )
-    fig.write_html(f'./tests/grad_pulse_propagation_{id}.html')
+    else:
+        fig = px.line(
+            data_frame=mag_profile_df, x="sample_axis", y="mag_profile", color="dim",
+            facet_col="name", facet_col_wrap=2
+        )
+        fig.for_each_annotation(lambda a: a.update(text=a.text.split("=")[-1]))
+        if slice_thickness_mm > 1e-3:
+            fig.add_vrect(x0=-slice_thickness_mm * 1e-3 / 2, x1=slice_thickness_mm * 1e-3 / 2,
+                          annotation_text="desired slice", annotation_position="bottom right",
+                          fillcolor="purple", opacity=0.25, line_width=0)
+    # labels = ["x", "y", "z", "e", "abs xy"]
+    # colors = sample_colorscale('viridis', np.linspace(0.9, 0.1, 5))
+    # fig.add_trace(
+    #     go.Scatter(x=axis, y=torch.norm(plot_mag[:, :2], dim=1),
+    #                name=f"mag_{labels[-1]} init",
+    #                line=dict(color=colors[-1]), fill='tozeroy'),
+    #     row=1, col=1
+    # )
+    # for k in range(4):
+    #     fig.add_trace(
+    #         go.Scatter(x=axis, y=plot_mag[:, k],
+    #                    name=f"mag_{labels[k]} init",
+    #                    line=dict(color=colors[k])),
+    #         row=1, col=1
+    #     )
+
+    out_path = plib.Path(out_path).absolute()
+    fig_file = out_path.joinpath(f"plot_magnetization_propagation_{name}").with_suffix(".html")
+    log_module.info(f"writing file: {fig_file.as_posix()}")
+    fig.write_html(fig_file.as_posix())
 
 
 def prep_plot_running_mag(rows: int, cols: int, t2: float, b1: float):
