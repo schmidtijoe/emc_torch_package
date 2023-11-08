@@ -1,5 +1,4 @@
 from emc_sim import options, simulations
-from emc_db import DB
 import logging
 logging.getLogger('simple_parsing').setLevel(logging.WARNING)
 
@@ -8,13 +7,7 @@ def main(sim_params: options.SimulationParameters):
     sim_params.config.display()
 
     # simulate
-    sim_params, sim_data = simulations.simulate(sim_params=sim_params)
-    db = DB.build_from_sim_data(sim_params=sim_params, sim_data=sim_data)
-    # plot db curves
-    db.plot()
-    # plot simulation
-    # plotting.plot_emc(sim_data)
-    # save db
+    db, sim_params, sim_data = simulations.simulate(sim_params=sim_params)
 
 
 if __name__ == '__main__':

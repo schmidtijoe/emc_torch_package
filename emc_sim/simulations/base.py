@@ -67,9 +67,23 @@ class Simulation(abc.ABC):
         profiles = []
         dims = []
         names = []
-        axs = []
+        sample_pts = []
+        last_name = ""
         for entry_idx in range(len(self._fig_magnetization_profile_snaps)):
             entry_dict = self._fig_magnetization_profile_snaps[entry_idx]
+            name = entry_dict["name"]
+            # loop to iterating characters, see if we are on same refocussing
+            for chr in name:
+                # checking if character is numeric,
+                # saving index
+                if chr.isdigit():
+                    temp = name.index(chr)
+                    name = name[:temp+1]
+                    break
+            if name == last_name:
+                dim_extend = "_post_acquisition"
+            else:
+                dim_extend = ""
             # on inital magnetization no different values are available
             mag_prof = entry_dict["profile"].numpy(force=True)
             t1_choice_idx = np.min([mag_prof.shape[0] - 1, t1_idx])
@@ -77,26 +91,31 @@ class Simulation(abc.ABC):
             b1_choice_idx = np.min([mag_prof.shape[2] - 1, b1_idx])
             mag_prof = mag_prof[t1_choice_idx, t2_choice_idx, b1_choice_idx]
             profiles.extend(np.abs(mag_prof[:, 0] + 1j * mag_prof[:, 1]))
-            dims.extend(["abs"] * mag_prof.shape[0])
-            axs.extend(self.data.sample_axis.numpy(force=True))
+            dims.extend([f"abs{dim_extend}"] * mag_prof.shape[0])
             profiles.extend(np.angle(mag_prof[:, 0] + 1j * mag_prof[:, 1]) / np.pi)
-            dims.extend(["angle"] * mag_prof.shape[0])
-            axs.extend(self.data.sample_axis)
+            dims.extend([f"angle{dim_extend}"] * mag_prof.shape[0])
             profiles.extend(mag_prof[:, 2])
-            dims.extend(["z"] * mag_prof.shape[0])
-            axs.extend(self.data.sample_axis)
+            dims.extend([f"z{dim_extend}"] * mag_prof.shape[0])
 
-            names.extend([entry_dict["name"]] * 3 * mag_prof.shape[0])
-
+            names.extend([name] * 3 * mag_prof.shape[0])
+            sample_pts.extend(np.tile(self.data.sample_axis.numpy(force=True) * 1e3, 3))
+            last_name = name
         df = pd.DataFrame({
-            "mag_profile": profiles, "dim": dims, "sample_axis": axs, "name": names
+            "profile": profiles, "dim": dims, "axis": sample_pts, "name": names
         })
         # calculate desired slice thickness from pulse & slice select
         bw = self.params.pulse.bandwidth_in_Hz      # Hz
         grad = self.params.sequence.gradient_excitation     # mT/m
         desired_slice_thickness_mm = np.abs(
-            2 * bw / self.params.sequence.gamma_hz / grad / 1e-6
+            bw / self.params.sequence.gamma_hz / grad / 1e-6
         )
-        plotting.plot_magnetization(mag_profile_df=df, animate=animate, name=f"t1-{t1_val}_t2-{t2_val}_b1-{b1_val}",
-                                    out_path=self.fig_path, slice_thickness_mm=desired_slice_thickness_mm)
+        plotting.plot_magnetization(
+            mag_profile_df=df, animate=animate, name=f"t1-{t1_val}_t2-{t2_val}_b1-{b1_val}",
+            out_path=self.fig_path, slice_thickness_mm=desired_slice_thickness_mm
+        )
 
+    def plot_emc_signal(self):
+        plotting.plot_emc_sim_data(sim_data=self.data, out_path=self.fig_path)
+
+    def plot_signal_traces(self):
+        plotting.plot_signal_traces(sim_data=self.data, out_path=self.fig_path)

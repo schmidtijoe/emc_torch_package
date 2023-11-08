@@ -1,13 +1,13 @@
+import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import plotly.subplots as psub
-from plotly.express.colors import sample_colorscale
 import plotly.express as px
 from emc_sim import options
 import torch
-import numpy as np
 import logging
 import pathlib as plib
+
 log_module = logging.getLogger(__name__)
 
 
@@ -48,7 +48,9 @@ def plot_grad_pulse(px: torch.tensor, py: torch.tensor, g: torch.tensor, b1_vals
     fig.write_html(fig_file.as_posix())
 
 
-def plot_signal_traces(sim_data: options.SimulationData):
+def plot_signal_traces(sim_data: options.SimulationData, out_path: plib.Path | str, name: str = ""):
+    if name:
+        name = f"_{name}"
     # plot at most 5 values
     num_t2s = min(sim_data.t2_vals.shape[0], 5)
     num_b1s = min(sim_data.b1_vals.shape[0], 5)
@@ -58,13 +60,13 @@ def plot_signal_traces(sim_data: options.SimulationData):
     # dims signal tensor [t1s, t2s, b1s, echoes, sim sampling pts]
     mag_plot_x = torch.real(sim_data.signal_tensor[0, :, :, :num_echoes].clone().detach().cpu())
     mag_plot_y = torch.imag(sim_data.signal_tensor[0, :, :, :num_echoes].clone().detach().cpu())
-    mag_plot_abs = torch.sqrt(mag_plot_y**2 + mag_plot_x**2)
+    mag_plot_abs = torch.sqrt(mag_plot_y ** 2 + mag_plot_x ** 2)
     mag_plot_phase = torch.angle(sim_data.signal_tensor[0, :, :, :num_echoes].clone().detach().cpu()) / torch.pi
     # setup figure
     fig = psub.make_subplots(
         rows=num_t2s, cols=num_b1s,
-        subplot_titles=[f"T2: {t2_*1e3:.1f} ms, B1: {b1_:.1f}" for t2_ in t2_vals for b1_ in b1_vals],
-        specs=[[{"secondary_y": True}] * b1_vals] * t2_vals
+        subplot_titles=[f"T2: {t2_ * 1e3:.1f} ms, B1: {b1_:.1f}" for t2_ in t2_vals for b1_ in b1_vals],
+        specs=[[{"secondary_y": True} for _ in b1_vals] for t2_ in t2_vals]
     )
     x_ax = torch.arange(1, 1 + sim_data.signal_tensor.shape[-1])
     for idx_t2 in range(num_t2s):
@@ -73,24 +75,24 @@ def plot_signal_traces(sim_data: options.SimulationData):
                 trace_abs = mag_plot_abs[idx_t2, idx_b1, idx_echo] / torch.max(mag_plot_abs[idx_t2, idx_b1, idx_echo])
                 trace_phase = mag_plot_phase[idx_t2, idx_b1, idx_echo]
                 fig.add_trace(
-                    go.Scatter(x=x_ax, y=mag_plot_x[idx_t2, idx_b1, idx_echo], name=f"mag_x echo {idx_echo+1}"),
-                    row=1+idx_t2, col=1+idx_b1,
+                    go.Scatter(x=x_ax, y=mag_plot_x[idx_t2, idx_b1, idx_echo], name=f"mag_x echo {idx_echo + 1}"),
+                    row=1 + idx_t2, col=1 + idx_b1,
                     secondary_y=False
                 )
                 fig.add_trace(
-                    go.Scatter(x=x_ax, y=mag_plot_y[idx_t2, idx_b1, idx_echo], name=f"mag_y echo {idx_echo+1}"),
-                    row=1+idx_t2, col=1+idx_b1,
+                    go.Scatter(x=x_ax, y=mag_plot_y[idx_t2, idx_b1, idx_echo], name=f"mag_y echo {idx_echo + 1}"),
+                    row=1 + idx_t2, col=1 + idx_b1,
                     secondary_y=False
                 )
                 fig.add_trace(
-                    go.Scatter(x=x_ax, y=trace_abs, fill="tozeroy", name=f"mag_signal echo {idx_echo+1}"),
-                    row=1+idx_t2, col=1+idx_b1,
+                    go.Scatter(x=x_ax, y=trace_abs, fill="tozeroy", name=f"mag_signal echo {idx_echo + 1}"),
+                    row=1 + idx_t2, col=1 + idx_b1,
                     secondary_y=False
                 )
                 fig.add_trace(
                     go.Scatter(x=x_ax, y=trace_phase,
-                               name=f"phase_signal echo {idx_echo+1}"),
-                    row=1+idx_t2, col=1+idx_b1,
+                               name=f"phase_signal echo {idx_echo + 1}"),
+                    row=1 + idx_t2, col=1 + idx_b1,
                     secondary_y=True
                 )
     fig.update_layout(legend_title_text="simulated signal curves")
@@ -98,10 +100,15 @@ def plot_signal_traces(sim_data: options.SimulationData):
     fig.update_yaxes(title_text="magnitude [normalized a.u.]", secondary_y=False)
     fig.update_yaxes(title_text="phase [$pi]", secondary_y=True)
 
-    fig.write_html(f'./tests/signal_traces.html')
+    out_path = plib.Path(out_path).absolute()
+    fig_file = out_path.joinpath(f"plot_signal_traces{name}").with_suffix(".html")
+    log_module.info(f"writing file: {fig_file.as_posix()}")
+    fig.write_html(fig_file.as_posix())
 
 
-def plot_emc_sim_data(sim_data: options.SimulationData):
+def plot_emc_sim_data(sim_data: options.SimulationData, out_path: plib.Path | str, name: str = ""):
+    if name:
+        name = f"_{name}"
     # plot at most 5 values
     num_t2s = min(sim_data.t2_vals.shape[0], 5)
     num_b1s = min(sim_data.b1_vals.shape[0], 5)
@@ -114,7 +121,7 @@ def plot_emc_sim_data(sim_data: options.SimulationData):
     fig = psub.make_subplots(
         rows=num_t2s, cols=num_b1s,
         subplot_titles=[f"T2: {t2_ * 1e3:.1f} ms, B1: {b1_:.1f}" for t2_ in t2_vals for b1_ in b1_vals],
-        specs=[[{"secondary_y": True} for b1_ in b1_vals] for t2_ in t2_vals]
+        specs=[[{"secondary_y": True} for _ in b1_vals] for _ in t2_vals]
     )
     x_ax = torch.arange(1, 1 + sim_data.emc_signal_mag.shape[-1])
     for idx_t2 in range(num_t2s):
@@ -122,13 +129,13 @@ def plot_emc_sim_data(sim_data: options.SimulationData):
             fig.add_trace(
                 go.Scatter(x=x_ax, y=emc_mag[idx_t2, idx_b1],
                            name=f"mag_emc"),
-                row=1+idx_t2, col=1+idx_b1,
+                row=1 + idx_t2, col=1 + idx_b1,
                 secondary_y=False
             )
             fig.add_trace(
                 go.Scatter(x=x_ax, y=emc_phase[idx_t2, idx_b1] / torch.pi,
                            name=f"phase_emc"),
-                row=1+idx_t2, col=1+idx_b1,
+                row=1 + idx_t2, col=1 + idx_b1,
                 secondary_y=True
             )
     fig.update_layout(legend_title_text="EMC simulated curves")
@@ -136,80 +143,85 @@ def plot_emc_sim_data(sim_data: options.SimulationData):
     fig.update_yaxes(title_text="Signal magnitude", secondary_y=False)
     fig.update_yaxes(title_text="Signal phase [$pi]", secondary_y=True)
 
-    fig.write_html(f'./tests/emc_signal.html')
-
-
-def plot_magnetization(mag_profile_df: pd.DataFrame, out_path: plib.Path | str, animate: bool = False,
-                       slice_thickness_mm: float = 0.0, name: str = ""):
-    if animate:
-        fig = px.line(
-            data_frame=mag_profile_df, x="sample_axis", y="mag_profile", color="dim", animation_frame="name"
-        )
-    else:
-        fig = px.line(
-            data_frame=mag_profile_df, x="sample_axis", y="mag_profile", color="dim",
-            facet_col="name", facet_col_wrap=2
-        )
-        fig.for_each_annotation(lambda a: a.update(text=a.text.split("=")[-1]))
-        if slice_thickness_mm > 1e-3:
-            fig.add_vrect(x0=-slice_thickness_mm * 1e-3 / 2, x1=slice_thickness_mm * 1e-3 / 2,
-                          annotation_text="desired slice", annotation_position="bottom right",
-                          fillcolor="purple", opacity=0.25, line_width=0)
-    # labels = ["x", "y", "z", "e", "abs xy"]
-    # colors = sample_colorscale('viridis', np.linspace(0.9, 0.1, 5))
-    # fig.add_trace(
-    #     go.Scatter(x=axis, y=torch.norm(plot_mag[:, :2], dim=1),
-    #                name=f"mag_{labels[-1]} init",
-    #                line=dict(color=colors[-1]), fill='tozeroy'),
-    #     row=1, col=1
-    # )
-    # for k in range(4):
-    #     fig.add_trace(
-    #         go.Scatter(x=axis, y=plot_mag[:, k],
-    #                    name=f"mag_{labels[k]} init",
-    #                    line=dict(color=colors[k])),
-    #         row=1, col=1
-    #     )
-
     out_path = plib.Path(out_path).absolute()
-    fig_file = out_path.joinpath(f"plot_magnetization_propagation_{name}").with_suffix(".html")
+    fig_file = out_path.joinpath(f"plot_emc_signal{name}").with_suffix(".html")
     log_module.info(f"writing file: {fig_file.as_posix()}")
     fig.write_html(fig_file.as_posix())
 
 
-def prep_plot_running_mag(rows: int, cols: int, t2: float, b1: float):
-    fig = psub.make_subplots(rows=rows, cols=cols)
-    fig.update_layout({"title": f"magnetization propagation, T2: {t2*1e3:.1f} ms, B1: {b1:.2f}"})
-    return fig
-
-
-def plot_running_mag(fig: go.Figure, sim_data: options.SimulationData, id: int):
-    plot_mag = sim_data.magnetization_propagation[0, 0, 0].clone().detach().cpu()
-    axis = sim_data.sample_axis.clone().detach().cpu()
-    labels = ["x", "y", "z", "e", "mag xy", "phase xy"]
-    colors = sample_colorscale('viridis', np.linspace(0.9, 0.1, 6))
-    fig.add_trace(
-        go.Scatter(x=axis, y=torch.norm(plot_mag[:, :2], dim=1),
-                   name=f"{labels[-2]}",
-                   line=dict(color=colors[-1]), fill='tozeroy'),
-        row=id + 1, col=1
-    )
-    fig.add_trace(
-        go.Scatter(x=axis, y=torch.angle(
-            plot_mag[:, 0] + 1j * plot_mag[:, 1]) / torch.pi,
-                   name=f"{labels[-1]} [$\pi$]",
-                   line=dict(color=colors[-2]), fill='tozeroy'),
-        row=id + 1, col=1
-    )
-    for k in range(4):
-        fig.add_trace(
-            go.Scatter(x=axis, y=plot_mag[:, k],
-                       name=f"mag_{labels[k]}",
-                       line=dict(color=colors[k])),
-            row=id + 1, col=1
+def plot_magnetization(mag_profile_df: pd.DataFrame, out_path: plib.Path | str,
+                       animate: bool = False, slice_thickness_mm: float = 0.0, name: str = ""):
+    if name:
+        name = f"_{name}"
+    if animate:
+        fig = px.line(
+            data_frame=mag_profile_df, x="axis", y="profile", color="dim",
+            animation_frame="name", labels={'y': 'Mag. Profile [a.u.]', 'x': 'sample axis [mm]'}
         )
-    return fig
+
+    else:
+        fig = px.line(
+            data_frame=mag_profile_df, x="axis", y="profile", color="dim",
+            facet_col="name", facet_col_wrap=2, labels={'y': 'Mag. Profile [a.u.]', 'x': 'sample axis [mm]'}
+        )
+        fig.for_each_annotation(lambda a: a.update(text=a.text.split("=")[-1]))
+        if slice_thickness_mm > 1e-3:
+            fig.add_vrect(x0=-slice_thickness_mm / 2, x1=slice_thickness_mm / 2,
+                          annotation_text="desired slice", annotation_position="bottom right",
+                          fillcolor="purple", opacity=0.25, line_width=0)
+    out_path = plib.Path(out_path).absolute()
+    fig_file = out_path.joinpath(f"plot_magnetization_propagation{name}").with_suffix(".html")
+    log_module.info(f"writing file: {fig_file.as_posix()}")
+    fig.write_html(fig_file.as_posix())
 
 
-def display_running_plot(fig, name: str = ""):
-    fig.write_html(f'./tests/{name}_grad_pulse_propagation.html')
+def plot_slice_img_tensor(slice_image_tensor: torch.tensor, sim_data: options.SimulationData,
+                          out_path: plib.Path | str, name: str = ""):
+    if name:
+        name = f"_{name}"
+    # pick middle sim range values
+    b1_idx = int(sim_data.b1_vals.shape[0] / 2)
+    b1_val = f"{sim_data.b1_vals[b1_idx].numpy(force=True):.2f}".replace(".", "p")
+    t2_idx = int(sim_data.t2_vals.shape[0] / 2)
+    t2_val = f"{1000 * sim_data.t2_vals[t2_idx].numpy(force=True):.1f}ms".replace(".", "p")
+    t1_idx = int(sim_data.t1_vals.shape[0] / 2)
+    t1_val = f"{sim_data.t1_vals[t1_idx].numpy(force=True):.2f}s".replace(".", "p")
+    name_extend = f"_t1-{t1_val}_t2-{t2_val}_b1-{b1_val}"
+    # dims [num_echoes, slice_sampling_pts]
+    slice_profile_sampling = slice_image_tensor[t1_idx, t2_idx, b1_idx].numpy(force=True)
+    mag = np.abs(slice_profile_sampling.flatten())
+    phase = np.angle(slice_profile_sampling.flatten())
+    data = np.concatenate(
+        (mag / np.max(mag), phase / np.pi),
+        axis=0
+    )
+    echo_num = 1 * np.repeat(
+            np.arange(slice_profile_sampling.shape[0]),
+            slice_profile_sampling.shape[1],
+            axis=0
+        )
+    echo_num = np.tile(echo_num, 2)
+    axis = np.tile(
+        1e3 * np.linspace(sim_data.sample_axis[0], sim_data.sample_axis[-1], slice_profile_sampling.shape[1]),
+        slice_profile_sampling.shape[0]
+    )
+    axis = np.tile(axis, 2)
+    labels = ["mag"] * np.prod(slice_profile_sampling.shape) + ["phase"] * np.prod(slice_profile_sampling.shape)
+    # build df
+    df = pd.DataFrame({
+        "data": data,
+        "echo_num": echo_num,
+        "axis": axis,
+        "label": labels
+    })
+
+    # plot
+    fig = px.line(data_frame=df, x="axis", y="data", color="echo_num",
+                  facet_row="label",
+                  labels={"x": "slice axis [mm]", "y": "profile [a.u.]", "color": "echo number"}
+                  )
+
+    out_path = plib.Path(out_path).absolute()
+    fig_file = out_path.joinpath(f"plot_slice_sampling_img_tensor{name}{name_extend}").with_suffix(".html")
+    log_module.info(f"writing file: {fig_file.as_posix()}")
+    fig.write_html(fig_file.as_posix())

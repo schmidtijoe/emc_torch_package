@@ -1,5 +1,5 @@
 from emc_sim.simulations.base import Simulation
-from emc_sim import options, blocks, functions
+from emc_sim import options, blocks, functions, plotting
 import torch
 import logging
 import time
@@ -83,7 +83,7 @@ class MESE(Simulation):
         )
         log_module.debug("loop through refocusing")
         with tqdm.trange(self.params.sequence.etl) as t:
-            t.set_description(f"ref pulse")
+            t.set_description(f"processing sequence, refocusing pulse loop")
             for loop_idx in t:
                 # timing
                 if loop_idx == 0:
@@ -107,10 +107,10 @@ class MESE(Simulation):
                 self.data = functions.propagate_matrix_mag_vector(m_p_post, sim_data=self.data)
 
                 if self.params.config.visualize:
-                    # save excitation profile snapshot
+                    # save profile snapshot after pulse
                     self.set_magnetization_profile_snap(
                         magnetization_profile=self.data.magnetization_propagation,
-                        snap_name=f"refocus_{loop_idx+1}"
+                        snap_name=f"refocus_{loop_idx+1}_post_pulse"
                     )
 
                 # acquisition
@@ -133,23 +133,26 @@ class MESE(Simulation):
                     # save excitation profile snapshot
                     self.set_magnetization_profile_snap(
                         magnetization_profile=self.data.magnetization_propagation,
-                        snap_name=f"refocus_{loop_idx + 1}"
+                        snap_name=f"refocus_{loop_idx + 1}_post_acquisition"
                     )
 
         if self.params.config.signal_fourier_sampling:
             log_module.debug('Signal array processing fourier')
-            image_tensor = torch.fft.ifftshift(
-                torch.fft.ifft(self.data.signal_tensor, dim=-1),
+            image_tensor = torch.fft.fftshift(
+                torch.fft.ifft(
+                    torch.fft.ifftshift(self.data.signal_tensor, dim=-1),
+                    dim=-1
+                ),
                 dim=-1
             )
+            if self.params.config.visualize:
+                # plot slice sampling image tensor (binned slice profile)
+                plotting.plot_slice_img_tensor(slice_image_tensor=image_tensor, sim_data=self.data,
+                                               out_path=self.fig_path)
+
             self.data.emc_signal_mag = (2 * torch.abs(torch.sum(image_tensor, dim=-1)) /
                                         self.params.settings.acquisition_number)
             self.data.emc_signal_phase = torch.angle(torch.sum(image_tensor, dim=-1))
-
-            if self.params.sequence.etl % 2 > 0:
-                # for some reason we get a shift from the fft when used with odd array length.
-                self.data.emc_signal_mag = torch.roll(self.data.emc_signal_mag, 1)
-                self.data.emc_signal_phase = torch.roll(self.data.emc_signal_phase, 1)
 
         self.data.time = time.time() - t_start
 

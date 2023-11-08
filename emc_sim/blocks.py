@@ -106,20 +106,19 @@ class GradPulse:
             if not params.config.sim_type == "mese_siemens":
                 # when acquiring in k-space along the slice we need to move the k-space start to the corner of k-space
                 # i.e.: prephase half an acquisition gradient moment, put it into the refocusing crusher timing
-                gradient_read_pre_phase =  (
+                gradient_read_pre_phase = (
                         - params.sequence.gradient_acquisition * params.sequence.duration_acquisition /
                         (2 * params.sequence.duration_crush)
                 )
                 # in the balanced version the read gradient is prephased during end of refocusing, then read,
                 # then rephased to 0 before next refocussing pulse, hence it must be added to both lobes (pre & post)
 
-        gradient_slice_pre = params.sequence.gradient_crush
-        duration_slice_pre = params.sequence.duration_crush
+        # gradient before pulse = rephasing of read gradient plus spoiling
+        gradient_slice_pre = params.sequence.gradient_crush + gradient_read_pre_phase
         if refocus_pulse_number == 0:
             # on first refocusing pulse we dont need the symmetrical slice gradients
             # since its included in the rephaser of the excitation pulse
             gradient_slice_pre = 0.0
-            duration_slice_pre = 0.0
 
         # build
         grad, pulse, duration, area_grad = cls.build_pulse_grad_shapes(
@@ -127,8 +126,8 @@ class GradPulse:
             duration_pulse_slice_select_us=params.sequence.duration_refocus,
             grad_amp_post=params.sequence.gradient_crush + gradient_read_pre_phase,
             duration_post_us=params.sequence.duration_crush,
-            grad_amp_pre=gradient_slice_pre + gradient_read_pre_phase,
-            duration_pre_us=duration_slice_pre
+            grad_amp_pre=gradient_slice_pre,
+            duration_pre_us=params.sequence.duration_crush
         )
         # assign vars
         grad_pulse = cls(
