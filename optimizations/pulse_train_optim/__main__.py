@@ -11,7 +11,7 @@ sys.path.append(p_wd.as_posix())
 from pulse_optim import options as poo
 from pulse_train_optim import optimizer as pto
 from emc_sim import options as eso
-from emc_sim import simulations, prep
+from emc_sim import simulations, blocks
 import torch
 import logging
 import tqdm.auto
@@ -112,10 +112,10 @@ if __name__ == '__main__':
     # create parser
     parser, prog_args = poo.create_cmd_line_interface()
 
-    sim_params = eso.SimulationParameters.from_cmd_args(prog_args)
+    sim_params = eso.SimulationParameters.from_cli(prog_args)
     optim_config = poo.ConfigOptimization.from_cmd_line_args(prog_args)
     # set logging level after possible config file read
-    if sim_params.config.debug_flag:
+    if sim_params.seq_params.debug:
         level = logging.DEBUG
     else:
         level = logging.INFO

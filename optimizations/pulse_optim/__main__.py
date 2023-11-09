@@ -6,7 +6,7 @@ p_wd = plib.Path("/data/pt_np-jschmidt/code/emc_torch").absolute()
 sys.path.append(p_wd.as_posix())
 
 import torch
-from emc_sim import functions, prep
+from emc_sim import functions, blocks
 from emc_sim import options as eso
 from pulse_optim import plotting, options, losses
 import logging
@@ -68,7 +68,7 @@ def set_init_tensors(sim_params: eso.SimulationParameters, device: torch.device,
     n_b1s = sim_params.settings.b1_list.__len__()
 
     # get sampling time -> from us to s
-    dt_s = torch.tensor(grad_pulse.dt_sampling_steps * 1e-6).to(device)
+    dt_s = torch.tensor(grad_pulse.dt_sampling_steps_us * 1e-6).to(device)
 
     # want to optimize for a pulse shape that is agnostic to b1 changes
     slice_thickness = torch.tensor(0.7).to(device)  # [mm]
@@ -162,7 +162,7 @@ def optimize(sim_params: eso.SimulationParameters, optim_config: options.ConfigO
                 p_x=px_input, p_y=py_input, g=g_input, g_r=gr_input
             )
 
-            if not sim_params.config.debug_flag:
+            if not sim_params.config.debug:
                 wandb.log(loss.get_registered_loss_dict())
 
             loss.value.backward()
@@ -209,10 +209,10 @@ def main():
     # create parser
     parser, prog_args = options.create_cmd_line_interface()
 
-    sim_params = eso.SimulationParameters.from_cmd_args(prog_args)
+    sim_params = eso.SimulationParameters.from_cli(prog_args)
     optim_config = options.ConfigOptimization.from_cmd_line_args(prog_args)
     # set logging level after possible config file read
-    if sim_params.config.debug_flag:
+    if sim_params.seq_params.debug:
         level = logging.DEBUG
     else:
         level = logging.INFO
