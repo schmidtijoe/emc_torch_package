@@ -40,7 +40,7 @@ class FID(Simulation):
         self.data = functions.propagate_gradient_pulse_relax(
             pulse_x=gp_excitation.data_pulse_x, pulse_y=gp_excitation.data_pulse_y,
             grad=gp_excitation.data_grad, sim_data=self.data,
-            dt_s=gp_excitation.dt_sampling_steps * 1e-6
+            dt_s=gp_excitation.dt_sampling_steps_us * 1e-6
         )
         # # plot excitation profile
         # fig = plotting.plot_running_mag(fig, self.data, id=plot_idx)

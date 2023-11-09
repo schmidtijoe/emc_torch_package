@@ -20,7 +20,7 @@ class MEGESSE(Simulation):
             pulse_number=0,
             sym_spoil=False,
             params=self.params,
-            orig_mese=False
+            balanced_read_grads=False
         )
 
         gp_refocus_1 = blocks.GradPulse.prep_grad_pulse(
@@ -28,7 +28,7 @@ class MEGESSE(Simulation):
             pulse_number=1,
             sym_spoil=False,
             params=self.params,
-            orig_mese=False
+            balanced_read_grads=False
         )
         # built list of grad_pulse events, acquisition and timing
         grad_pulses = [gp_refocus_1]
@@ -38,7 +38,7 @@ class MEGESSE(Simulation):
                 pulse_number=r_idx,
                 sym_spoil=True,
                 params=self.params,
-                orig_mese=False
+                balanced_read_grads=False
             )
             grad_pulses.append(gp_refocus)
 
