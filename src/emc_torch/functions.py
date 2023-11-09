@@ -1,8 +1,7 @@
 import torch
 from scipy import stats
 import numpy as np
-from emc_sim import options
-from pypsi.parameters import RFParameters
+from emc_torch import options
 
 
 def pulse_calibration_integral(sim_params: options.SimulationParameters,

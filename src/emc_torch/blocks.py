@@ -1,5 +1,5 @@
 """ prepare module to get and cast data needed for simulations"""
-from emc_sim import options, functions, plotting
+from emc_torch import options, functions, plotting
 import logging
 import torch
 import numpy as np

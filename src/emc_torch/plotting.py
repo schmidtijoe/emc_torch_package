@@ -3,7 +3,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import plotly.subplots as psub
 import plotly.express as px
-from emc_sim import options
+from emc_torch import options
 import torch
 import logging
 import pathlib as plib
@@ -54,52 +54,48 @@ def plot_signal_traces(sim_data: options.SimulationData, out_path: plib.Path | s
     # plot at most 5 values
     num_t2s = min(sim_data.t2_vals.shape[0], 5)
     num_b1s = min(sim_data.b1_vals.shape[0], 5)
-    num_echoes = min(sim_data.emc_signal_mag.shape[-2], 2)
-    t2_vals = sim_data.t2_vals[:num_t2s]
-    b1_vals = sim_data.b1_vals[:num_b1s]
+    num_echoes = sim_data.emc_signal_mag.shape[-1]
+    t2_vals = sim_data.t2_vals[:num_t2s].numpy()
+    b1_vals = sim_data.b1_vals[:num_b1s].numpy()
     # dims signal tensor [t1s, t2s, b1s, echoes, sim sampling pts]
-    mag_plot_x = torch.real(sim_data.signal_tensor[0, :, :, :num_echoes].clone().detach().cpu())
-    mag_plot_y = torch.imag(sim_data.signal_tensor[0, :, :, :num_echoes].clone().detach().cpu())
-    mag_plot_abs = torch.sqrt(mag_plot_y ** 2 + mag_plot_x ** 2)
-    mag_plot_phase = torch.angle(sim_data.signal_tensor[0, :, :, :num_echoes].clone().detach().cpu()) / torch.pi
-    # setup figure
-    fig = psub.make_subplots(
-        rows=num_t2s, cols=num_b1s,
-        subplot_titles=[f"T2: {t2_ * 1e3:.1f} ms, B1: {b1_:.1f}" for t2_ in t2_vals for b1_ in b1_vals],
-        specs=[[{"secondary_y": True} for _ in b1_vals] for t2_ in t2_vals]
-    )
-    x_ax = torch.arange(1, 1 + sim_data.signal_tensor.shape[-1])
+    mag_plot_x = np.real(sim_data.signal_tensor[0, :, :, :num_echoes].numpy(force=True))
+    mag_plot_y = np.imag(sim_data.signal_tensor[0, :, :, :num_echoes].numpy(force=True))
+    mag_plot_abs = np.sqrt(mag_plot_y ** 2 + mag_plot_x ** 2)
+    mag_plot_abs /= np.max(mag_plot_abs)
+    mag_plot_phase = np.angle(sim_data.signal_tensor[0, :, :, :num_echoes].numpy(force=True)) / np.pi
+    x_ax = np.arange(1, 1 + sim_data.signal_tensor.shape[-1])
+
+    data = []
+    echos = []
+    label = []
+    b1 = []
+    t2 = []
+    ax = []
     for idx_t2 in range(num_t2s):
         for idx_b1 in range(num_b1s):
             for idx_echo in range(num_echoes):
-                trace_abs = mag_plot_abs[idx_t2, idx_b1, idx_echo] / torch.max(mag_plot_abs[idx_t2, idx_b1, idx_echo])
+                trace_abs = mag_plot_abs[idx_t2, idx_b1, idx_echo]
+                data.extend(trace_abs.tolist())
+                label.extend(["mag"] * trace_abs.shape[0])
                 trace_phase = mag_plot_phase[idx_t2, idx_b1, idx_echo]
-                fig.add_trace(
-                    go.Scatter(x=x_ax, y=mag_plot_x[idx_t2, idx_b1, idx_echo], name=f"mag_x echo {idx_echo + 1}"),
-                    row=1 + idx_t2, col=1 + idx_b1,
-                    secondary_y=False
-                )
-                fig.add_trace(
-                    go.Scatter(x=x_ax, y=mag_plot_y[idx_t2, idx_b1, idx_echo], name=f"mag_y echo {idx_echo + 1}"),
-                    row=1 + idx_t2, col=1 + idx_b1,
-                    secondary_y=False
-                )
-                fig.add_trace(
-                    go.Scatter(x=x_ax, y=trace_abs, fill="tozeroy", name=f"mag_signal echo {idx_echo + 1}"),
-                    row=1 + idx_t2, col=1 + idx_b1,
-                    secondary_y=False
-                )
-                fig.add_trace(
-                    go.Scatter(x=x_ax, y=trace_phase,
-                               name=f"phase_signal echo {idx_echo + 1}"),
-                    row=1 + idx_t2, col=1 + idx_b1,
-                    secondary_y=True
-                )
-    fig.update_layout(legend_title_text="simulated signal curves")
-    fig.update_xaxes(title_text="virtual ADC sampling pt")
-    fig.update_yaxes(title_text="magnitude [normalized a.u.]", secondary_y=False)
-    fig.update_yaxes(title_text="phase [$pi]", secondary_y=True)
+                data.extend(trace_phase.tolist())
+                label.extend(["phase"] * trace_abs.shape[0])
 
+                echos.extend([idx_echo] * 2 * trace_abs.shape[0])
+                b1.extend([b1_vals[idx_b1]] * 2 * trace_abs.shape[0])
+                t2.extend([1000 * t2_vals[idx_t2]] * 2 * trace_abs.shape[0])
+                ax.extend(x_ax.tolist() * 2)
+
+    # fig.update_layout(legend_title_text="simulated signal curves")
+    # fig.update_xaxes(title_text="virtual ADC sampling pt")
+    # fig.update_yaxes(title_text="magnitude [normalized a.u.]", secondary_y=False)
+    # fig.update_yaxes(title_text="phase [$pi]", secondary_y=True)
+
+    df = pd.DataFrame({
+        "data": data, "t2": t2, "b1": b1, "labels": label, "echos": echos, "ax": ax,
+    })
+    fig = px.line(df, x="ax", y="data", color="labels", facet_row="t2", facet_col="b1", animation_frame="echos",
+                  labels=dict(x="sampling point", y="signal [a.u.]"))
     out_path = plib.Path(out_path).absolute()
     fig_file = out_path.joinpath(f"plot_signal_traces{name}").with_suffix(".html")
     log_module.info(f"writing file: {fig_file.as_posix()}")

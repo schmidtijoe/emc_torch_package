@@ -1,5 +1,5 @@
-from emc_sim.simulations.base import Simulation
-from emc_sim import options, blocks, functions, plotting
+from emc_torch import options, blocks, functions, plotting
+from emc_torch.simulations.base import Simulation
 import torch
 import logging
 import time

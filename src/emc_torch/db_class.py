@@ -1,7 +1,8 @@
 import logging
 import pickle
 import typing
-import emc_sim.options as es_opts
+from pypsi.parameters import EmcParameters
+from emc_torch import options
 import numpy as np
 import pandas as pd
 import pathlib as plib
@@ -11,12 +12,12 @@ import matplotlib.colors as mpc
 import plotly.express as px
 
 plt.style.use('ggplot')
-logModule = logging.getLogger(__name__)
+log_module = logging.getLogger(__name__)
 
 
 class DB:
     def __init__(self, pd_dataframe: pd.DataFrame = pd.DataFrame(),
-                 config: es_opts.SequenceConfiguration = es_opts.SequenceConfiguration(), name: str = "db_"):
+                 sequence_config: EmcParameters = EmcParameters(), name: str = "db_"):
         # define structure of pandas df
         self.indices: list = ["emc_mag", "emc_phase", "t2", "t1", "b1"]
         # check indices
@@ -25,10 +26,10 @@ class DB:
                 err = f"db structure not given. Index {ind} not found. " \
                       f"Make sure these indices are columns in the dataframe: {self.get_indexes()};" \
                       f"\nIndices found in db: {pd_dataframe.columns}"
-                logModule.error(err)
+                log_module.error(err)
                 raise ValueError(err)
         self.pd_dataframe: pd.DataFrame = pd_dataframe
-        self.config: es_opts.SequenceConfiguration = config
+        self.seq_params: EmcParameters = sequence_config
         self.np_mag_array: np.ndarray = np.array([*pd_dataframe.emc_mag.to_numpy()])
         self.np_phase_array: np.ndarray = np.array([*pd_dataframe.emc_phase.to_numpy()])
         self.etl: int = self.np_mag_array.shape[-1]
@@ -46,13 +47,17 @@ class DB:
     def get_t2_b1_values(self) -> (np.ndarray, np.ndarray):
         return np.unique(self.pd_dataframe.t2), np.unique(self.pd_dataframe.b1)
 
-    def plot(self, t1_range_s: tuple = None, t2_range_ms: tuple = (20, 50), b1_range: tuple = (0.6, 1.4)):
+    def plot(self,
+             out_path: plib.Path | str, name: str = "",
+             t1_range_s: tuple = None, t2_range_ms: tuple = (20, 50), b1_range: tuple = (0.6, 1.4)):
+        if name:
+            name = f"_{name}"
         # select range
         df = self.pd_dataframe
         df["t2"] = 1e3 * df["t2"]
         df["t2"] = df["t2"].round(2)
         df["b1"] = df["b1"].round(2)
-        df["echo"] = df["echo"]+1
+        df["echo"] = df["echo"] + 1
         if t2_range_ms is not None:
             df = df[t2_range_ms[0] < df["t2"]]
             df = df[df["t2"] < t2_range_ms[1]]
@@ -69,10 +74,25 @@ class DB:
                           "t2": "T2 [ms]",
                           "b1": "B1"
                       })
-        fig.write_html("/data/pt_np-jschmidt/code/emc_torch/tests/emc_db.html")
+        out_path = plib.Path(out_path).absolute()
+        fig_file = out_path.joinpath(f"emc_db_mag{name}").with_suffix(".html")
+        log_module.info(f"writing file: {fig_file.as_posix()}")
+        fig.write_html(fig_file.as_posix())
+
+        fig = px.line(df, x="echo", y="emc_phase", color="t2", markers=True, facet_col="b1", facet_row="t1",
+                      labels={
+                          "echo": "Echo Number",
+                          "emc_mag": "Echo Phase [rad]",
+                          "t2": "T2 [ms]",
+                          "b1": "B1"
+                      })
+
+        fig_file = out_path.joinpath(f"emc_db_phase{name}").with_suffix(".html")
+        log_module.info(f"writing file: {fig_file.as_posix()}")
+        fig.write_html(fig_file.as_posix())
 
     def plot_mpl(self, t2_range_ms: tuple = (10.0, 40.0), b1_range: tuple = (0.6, 1.2), save: str = ""):
-        logModule.info("plotting")
+        log_module.info("plotting")
         t2_range_s = 1e-3 * np.array(t2_range_ms)
         df_selection = self.pd_dataframe[self.pd_dataframe.t2.between(t2_range_s[0], t2_range_s[1], inclusive='both')]
         df_selection = df_selection[df_selection.b1.between(b1_range[0], b1_range[1], inclusive='both')]
@@ -111,9 +131,9 @@ class DB:
 
         for b in range(curves.shape[1]):
             ax.hlines(0.2 * (b + 1), 0, x_ax[-1], color=colors[b][-int(t2s.shape[0] / 3)],
-                      linestyle='dotted', zorder=curves.shape[1]-b+1)
+                      linestyle='dotted', zorder=curves.shape[1] - b + 1)
             for a in range(curves.shape[0]):
-                ax.plot(x_ax, 0.2 * (b + 1) + curves[a, b], color=colors[b][a], zorder=curves.shape[1]-b+1)
+                ax.plot(x_ax, 0.2 * (b + 1) + curves[a, b], color=colors[b][a], zorder=curves.shape[1] - b + 1)
 
         norm = mpc.Normalize(vmin=t2_range_ms[0], vmax=t2_range_ms[1])
         ticks = [[], None]
@@ -133,7 +153,7 @@ class DB:
             if not save_path.suffixes:
                 save_path = save_path.joinpath(f"{self.name}_plot.png")
             if ".png" not in save_path.suffixes:
-                logModule.info(f"plot saved as .png image. suffix adapted!")
+                log_module.info(f"plot saved as .png image. suffix adapted!")
                 save_path = save_path.with_suffix(".png")
             save_path.parent.mkdir(exist_ok=True, parents=True)
             plt.savefig(save_path, bbox_inches='tight', transparent=True)
@@ -146,12 +166,12 @@ class DB:
             path = path.joinpath(f"{self.name}_database_file.pkl")
         if ".pkl" not in path.suffixes:
             # given wrong filending
-            logModule.info("filename saved as .pkl, adopting suffix.")
+            log_module.info("filename saved as .pkl, adopting suffix.")
             path = path.with_suffix('.pkl')
         # mkdir ifn existent
         path.parent.mkdir(exist_ok=True, parents=True)
 
-        logModule.info(f"writing file {path}")
+        log_module.info(f"writing file {path}")
 
         with open(path, "wb") as p_file:
             pickle.dump(self, p_file)
@@ -161,12 +181,12 @@ class DB:
         path = plib.Path(path).absolute()
         if ".pkl" not in path.suffixes:
             # given wrong filending
-            logModule.info("filename not .pkl, try adopting suffix.")
+            log_module.info("filename not .pkl, try adopting suffix.")
             path = path.with_suffix('.pkl')
         if not path.is_file():
             # given a path not a file
             err = f"{path.__str__()} not a file"
-            logModule.error(err)
+            log_module.error(err)
             raise ValueError(err)
         with open(path, "rb") as p_file:
             db = pickle.load(p_file)
@@ -213,7 +233,7 @@ class DB:
         pass
 
     @classmethod
-    def build_from_sim_data(cls, sim_params: es_opts.SimulationParameters, sim_data: es_opts.SimulationData):
+    def build_from_sim_data(cls, sim_params: EmcParameters, sim_data: options.SimulationData):
         d = {}
         index = 0
         for idx_t1 in range(sim_data.t1_vals.shape[0]):
@@ -234,7 +254,7 @@ class DB:
                         d.__setitem__(index, td)
                         index += 1
         db_pd = pd.DataFrame(d).T
-        return cls(pd_dataframe=db_pd, config=sim_params.sequence)
+        return cls(pd_dataframe=db_pd, sequence_config=sim_params)
 
 
 if __name__ == '__main__':

@@ -2,7 +2,7 @@ import abc
 
 import pandas as pd
 import numpy as np
-from emc_sim import options, blocks, plotting
+from emc_torch import options, blocks, plotting
 import logging
 import torch
 import pathlib as plib
