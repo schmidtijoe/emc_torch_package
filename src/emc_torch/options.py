@@ -9,7 +9,7 @@ import typing
 import pathlib as plib
 import pandas as pd
 from scipy import stats
-import pypsi
+from pypulseq_interface import pypsi
 
 log_module = logging.getLogger(__name__)
 
@@ -104,11 +104,22 @@ class SimulationSettings(sp.Serializable):
 @dataclass
 class SimulationParameters(sp.Serializable):
     config: SimulationConfig = SimulationConfig()
-    sequence: pypsi.parameters.EmcParameters = pypsi.parameters.EmcParameters()
-    pulse: pypsi.parameters.RFParameters = pypsi.parameters.RFParameters()
     settings: SimulationSettings = SimulationSettings()
 
-    def __post_init__(self):
+    def _set_defaults(self):
+        self._set_sequence()
+        self._set_pulse()
+        self.set_acquisition_gradient()
+
+    def _set_sequence(self, sequence: pypsi.parameters.EmcParameters = pypsi.parameters.EmcParameters()):
+        self.sequence = sequence
+        # upon setting or resetting sequence info we need to adjust the acquisition gradient
+        self.set_acquisition_gradient()
+
+    def _set_pulse(self, pulse: pypsi.parameters.RFParameters = pypsi.parameters.RFParameters()):
+        self.pulse = pulse
+
+    def set_acquisition_gradient(self):
         log_module.debug(
             f"spatial sampling resolution: {self.settings.get_slice_profile_sample_resolution() * 1e6:.2f} um"
             f"(per spin isochromat)"
@@ -123,14 +134,10 @@ class SimulationParameters(sp.Serializable):
         grad_amp = grad_area / self.sequence.gamma_hz / self.sequence.duration_acquisition * 1e6  # cast to s
         self.sequence.gradient_acquisition = - grad_amp * 1e3  # cast to mT
 
-    def set_acquisition_gradient(self):
-        self.__post_init__()
-
     @classmethod
     def from_cli(cls, args: sp.ArgumentParser.parse_args):
-        sim_params = SimulationParameters(config=args.config, settings=args.settings, sequence=args.sequence)
-
-        non_default_config, non_default_settings, non_default_sequence = sim_params._check_non_default_vars()
+        sim_params = SimulationParameters(config=args.config, settings=args.settings)
+        non_default_config, non_default_settings = sim_params._check_non_default_vars()
 
         if args.config.config_file:
             sim_params = SimulationParameters.load(args.config.config_file)
@@ -139,8 +146,8 @@ class SimulationParameters(sp.Serializable):
                 sim_params.config.__setattr__(key, value)
             for key, value in non_default_settings.items():
                 sim_params.settings.__setattr__(key, value)
-            for key, value in non_default_sequence.items():
-                sim_params.sequence.__setattr__(key, value)
+        # init with default sequence parameters and pulse
+        sim_params._set_defaults()
 
         # we check parsed arguments for explicit cmd line input assuming explicit input means "different from default".
         # Since everytime the cmd is parsed all values not given explicitly are parsed with respective
@@ -156,45 +163,49 @@ class SimulationParameters(sp.Serializable):
             o_path = args.config.save_path
         # pypsi interface file
         if args.config.pypsi_path or sim_params.config.pypsi_path:
+            # if interface file given in sim_params object (eg through loading config file) set it
             pyp_path = sim_params.config.pypsi_path
-            if args.config.pypsi_path:
+            if "pypsi_path" in non_default_config.keys():
+                # if explicitly given by cmd line, overwrite
                 pyp_path = args.config.pypsi_path
             log_module.debug(f"load pypsi interface file {pyp_path}")
             pyp_interface = pypsi.Params.load(pyp_path)
-            sim_params.sequence = pyp_interface.emc
-            sim_params.pulse = pyp_interface.pulse
+            sim_params._set_sequence(sequence=pyp_interface.emc)
+            sim_params._set_pulse(pulse=pyp_interface.pulse)
             pypsi_set = True
             # if no output path provided use pypsi path
             if not o_path:
                 sim_params.config.save_path = plib.Path(pyp_path).absolute().parent.as_posix()
                 o_path_from_pyp = True
 
+        err_w_file = []
         # if explicit optional emc config file or pulse file given: overwrite,
         # cli argument is taken over config file argument
-        attrs = {
-            "emc_seq_file": {"attr": "sequence", "loader": pypsi.parameters.EmcParameters.load},
-            "pulse_file": {"attr": "pulse", "loader": pypsi.parameters.RFParameters.load}
-        }
-        for arg in attrs.keys():
-            if args.config.__getattribute__(arg) or sim_params.config.__getattribute__(arg):
-                file = sim_params.config.__getattribute__(arg)
-                if args.config.__getattribue__(arg):
-                    file = args.config.__getattribute__(arg)
-                sim_params.__setattr__(attrs[arg]["attr"], attrs[arg]["loader"](file))
-                # if emc provided explicitely and save path deduced from pypsi, change to emc path
-                if arg == "emc_seq_file":
-                    if o_path_from_pyp:
-                        sim_params.config.save_path = plib.Path(file).absolute().parent.as_posix()
-            else:
-                if not pypsi_set:
-                    err = f"neither direct {arg} nor pypulseq interface file provided."
-                    log_module.error(err)
-                    raise FileNotFoundError(err)
+        if "emc_seq_file" in non_default_config.keys() or sim_params.config.emc_seq_file:
+            file = sim_params.config.emc_seq_file
+            if "emc_seq_file" in non_default_config.keys():
+                file = args.config.emc_seq_file
+            sim_params._set_sequence(sequence=pypsi.parameters.EmcParameters.load(file))
+            if o_path_from_pyp:
+                sim_params.config.save_path = plib.Path(file).absolute().parent.as_posix()
+        else:
+            err_w_file.append("emc seq. file")
+        if "pulse_file" in non_default_config.keys() or sim_params.config.pulse_file:
+            file = sim_params.config.pulse_file
+            if "emc_seq_file" in non_default_config.keys():
+                file = args.config.pulse_file
+            sim_params._set_pulse(pulse=pypsi.parameters.RFParameters.load(file))
+        else:
+            err_w_file.append("pulse file")
 
-        sim_params.set_acquisition_gradient()
+        if err_w_file and not pypsi_set:
+            err = f"neither direct {err_w_file} nor pypulseq interface file provided."
+            log_module.error(err)
+            raise FileNotFoundError(err)
+
         return sim_params
 
-    def _check_non_default_vars(self) -> (dict, dict, dict):
+    def _check_non_default_vars(self) -> (dict, dict):
         def_config = SimulationConfig()
         non_default_config = {}
         for key, value in vars(self.config).items():
@@ -209,15 +220,7 @@ class SimulationParameters(sp.Serializable):
             if self.settings.__getattribute__(key) != def_settings.__getattribute__(key):
                 non_default_settings.__setitem__(key, value)
 
-        def_sequence = pypsi.parameters.EmcParameters()
-        non_default_sequence = {}
-        for key, value in vars(self.sequence).items():
-            # catch post init attribute
-            if key == 'gradientAcquisition':
-                continue
-            if self.sequence.__getattribute__(key) != def_sequence.__getattribute__(key):
-                non_default_sequence.__setitem__(key, value)
-        return non_default_config, non_default_settings, non_default_sequence
+        return non_default_config, non_default_settings
 
     def save_database(self, database: pd.DataFrame) -> None:
         base_path = plib.Path(self.config.save_path).absolute()
@@ -354,7 +357,6 @@ def create_cli():
     parser = sp.ArgumentParser(prog='emc_torch_sim')
     parser.add_arguments(SimulationConfig, dest="config")
     parser.add_arguments(SimulationSettings, dest="settings")
-    parser.add_arguments(pypsi.parameters.EmcParameters, dest="sequence")
 
     args = parser.parse_args()
 
@@ -362,10 +364,11 @@ def create_cli():
 
 
 if __name__ == '__main__':
-    params = SimulationParameters()
-    pyp_path = plib.Path("./tests/pypsi_mese_test.pkl").absolute()
-    pyp_interface = pypsi.Params.load(pyp_path.as_posix())
-    params.sequence = pyp_interface.emc
-    params.pulse = pyp_interface.pulse
-    path = plib.Path("./tests/emc_config.json").absolute()
-    params.save_json(path.as_posix(), indent=2, separators=(',', ':'))
+    pass
+    # params = SimulationParameters()
+    # pyp_path = plib.Path("./tests/pypsi_mese_test.pkl").absolute()
+    # pyp_interface = pypsi.Params.load(pyp_path.as_posix())
+    # params.sequence = pyp_interface.emc
+    # params.pulse = pyp_interface.pulse
+    # path = plib.Path("./tests/emc_config.json").absolute()
+    # params.save_json(path.as_posix(), indent=2, separators=(',', ':'))

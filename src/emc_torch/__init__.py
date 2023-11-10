@@ -6,6 +6,6 @@ __all__ = ["plotting", "simulate", "options", "DB"]
 # make sure all sources are seen -> submodule
 import sys
 import pathlib
-pulse_path = pathlib.Path(__file__).absolute().parent.parent.parent.joinpath("pypulseq_interface/")
+pulse_path = pathlib.Path(__file__).absolute().parent.parent.parent.joinpath("submodules/pypulseq_interface/")
 sys.path.append(pulse_path.as_posix())
 

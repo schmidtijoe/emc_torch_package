@@ -10,6 +10,9 @@ import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 import matplotlib.colors as mpc
 import plotly.express as px
+from plotly.express.colors import sample_colorscale
+import plotly.subplots as psub
+import plotly.graph_objects as go
 
 plt.style.use('ggplot')
 log_module = logging.getLogger(__name__)
@@ -49,7 +52,7 @@ class DB:
 
     def plot(self,
              out_path: plib.Path | str, name: str = "",
-             t1_range_s: tuple = None, t2_range_ms: tuple = (20, 50), b1_range: tuple = (0.6, 1.4)):
+             t1_range_s: tuple = None, t2_range_ms: tuple = (20, 50), b1_range: tuple = (0.5, 1.2)):
         if name:
             name = f"_{name}"
         # select range
@@ -67,27 +70,84 @@ class DB:
         if b1_range is not None:
             df = df[b1_range[0] < df["b1"]]
             df = df[df["b1"] < b1_range[1]]
-        fig = px.line(df, x="echo", y="emc_mag", color="t2", markers=True, facet_col="b1", facet_row="t1",
-                      labels={
-                          "echo": "Echo Number",
-                          "emc_mag": "Echo Magnitude [A.U.]",
-                          "t2": "T2 [ms]",
-                          "b1": "B1"
-                      })
+        # for now we only take one t1 value
+        df = df[df["t1"] == df["t1"].unique()[0]].drop(columns=["t1"]).drop(columns="index").reset_index(drop=True)
+        # setup colorscales to use
+        x = np.linspace(0.2, 1, len(df["t2"].unique()))
+        c_scales = ["Purples", "Oranges", "Greens", "Reds", "Blues"]
+        echo_ax = df["echo"].to_numpy()
+        # setup subplots
+        num_plot_b1s = len(df["b1"].unique())
+        titles = ["Magnitude", "Phase"]
+        fig = psub.make_subplots(
+            2, 1, shared_xaxes=True, subplot_titles=titles
+        )
+        # edit axis labels
+        fig['layout']['xaxis2']['title'] = 'Echo Number'
+        fig['layout']['yaxis']['title'] = 'Signal [a.u.]'
+        fig['layout']['yaxis2']['title'] = 'Phase [rad]'
+
+        for b1_idx in range(num_plot_b1s):
+            c_tmp = sample_colorscale(c_scales[b1_idx], list(x))
+            temp_df = df[df["b1"] == df["b1"].unique()[b1_idx]].reset_index(drop=True)
+            for t2_idx in range(len(temp_df["t2"].unique())):
+                t2 = temp_df["t2"].unique()[t2_idx]
+                c = c_tmp[t2_idx]
+
+                mag = temp_df[temp_df["t2"] == t2]["emc_mag"].to_numpy()
+                mag /= np.abs(np.max(mag))
+                fig.add_trace(
+                    go.Scatter(
+                        x=echo_ax, y=mag, marker_color=c, showlegend=False
+                    ),
+                    1, 1
+                )
+
+                phase = temp_df[temp_df["t2"] == t2]["emc_phase"].to_numpy()
+                fig.add_trace(
+                    go.Scatter(
+                        x=echo_ax, y=phase, marker_color=c, showlegend=False
+                    ),
+                    2, 1
+                )
+            # add colorbar
+            colorbar_trace = go.Scatter(
+                x=[None], y=[None], mode='markers',
+                showlegend=False,
+                marker=dict(
+                    colorscale=c_scales[b1_idx], showscale=True,
+                    cmin=t2_range_ms[0], cmax=t2_range_ms[1],
+                    colorbar=dict(
+                        title=f"B1: {df['b1'].unique()[b1_idx]}",
+                        x=1.02 + 0.05 * b1_idx
+                    )
+                )
+            )
+            fig.add_trace(colorbar_trace, 1, 1)
+
+        # colorbar labels
+        fig.add_annotation(
+            xref="x domain", yref="y domain", x=1.005, y=-0.5, showarrow=False,
+            text="T2 [ms]", row=1, col=1, textangle=-90, font=dict(size=14)
+        )
+        # df_mag = df[["t2", "b1", "emc_mag", "echo"]].rename(columns={"emc_mag": "data"})
+        # df_mag = pd.concat((df_mag.reset_index(), pd.Series(["emc_mag"] * len(df_mag), name="label")), axis=1)
+        # df_mag["data"] = df_mag["data"] / df_mag["data"].abs().max()
+        # df_phase = df[["t2", "b1", "emc_phase", "echo"]].rename(columns={"emc_phase": "data"})
+        # df_phase = pd.concat((df_phase.reset_index(), pd.Series(["emc_phase"] * len(df_mag), name="label")), axis=1)
+        # df_phase["data"] = df_phase["data"] / np.pi
+        # df_plot = pd.concat((df_mag, df_phase))
+        # fig = px.line(df_plot, x="echo", y="data", color="t2", markers=True, facet_col="b1", facet_row="label",
+        #               labels={
+        #                   "echo": "Echo Number",
+        #                   "data": "Echo Magnitude | phase [A.U. | pi]",
+        #                   "t2": "T2 [ms]",
+        #                   "b1": "B1"
+        #               })
+        # fig.update_yaxes(range=[-1, 1])
+
         out_path = plib.Path(out_path).absolute()
-        fig_file = out_path.joinpath(f"emc_db_mag{name}").with_suffix(".html")
-        log_module.info(f"writing file: {fig_file.as_posix()}")
-        fig.write_html(fig_file.as_posix())
-
-        fig = px.line(df, x="echo", y="emc_phase", color="t2", markers=True, facet_col="b1", facet_row="t1",
-                      labels={
-                          "echo": "Echo Number",
-                          "emc_mag": "Echo Phase [rad]",
-                          "t2": "T2 [ms]",
-                          "b1": "B1"
-                      })
-
-        fig_file = out_path.joinpath(f"emc_db_phase{name}").with_suffix(".html")
+        fig_file = out_path.joinpath(f"emc_db{name}").with_suffix(".html")
         log_module.info(f"writing file: {fig_file.as_posix()}")
         fig.write_html(fig_file.as_posix())
 
