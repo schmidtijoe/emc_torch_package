@@ -16,7 +16,7 @@ import pandas as pd
 import simple_parsing as sp
 import simple_parsing.helpers.serialization as sphs
 import dataclasses as dc
-from pypsi import parameters
+from . import parameters
 
 log_module = logging.getLogger(__name__)
 
@@ -144,7 +144,8 @@ class Params(sp.helpers.Serializable):
     def visualize(self):
         self.sampling_k_traj.plot_sampling_pattern(output_path=self.config.output_path)
         self.sampling_k_traj.plot_k_space_trajectories(output_path=self.config.output_path)
-        self.pulse.plot(output_path=self.config.output_path)
+        self.pulse.plot(output_path=self.config.output_path, excitation=True)
+        self.pulse.plot(output_path=self.config.output_path, excitation=False)
 
     def _load_extra_argfile(self, extra_files: XConfig):
         # check through all arguments

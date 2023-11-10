@@ -23,9 +23,9 @@ def pulse_calibration_integral(sim_params: options.SimulationParameters,
         angle_flip = sim_params.sequence.refocus_angle[refocusing_pulse_number - 1]
         phase = sim_params.sequence.refocus_phase[refocusing_pulse_number - 1] / 180.0 * torch.pi
     # calculate with applied actual flip angle offset
-    sim_params.pulse.set_flip_anlge(flip_angle_rad=angle_flip / 180 * torch.pi)
-    b1_pulse = torch.from_numpy(sim_params.pulse.amplitude) * torch.exp(
-        1j * (torch.from_numpy(sim_params.pulse.phase) + phase)
+    sim_params.pulse.set_flip_angle(flip_angle_rad=angle_flip / 180 * torch.pi, excitation=excitation)
+    b1_pulse = torch.from_numpy(sim_params.pulse.get_pulse(excitation=excitation).amplitude) * torch.exp(
+        1j * (torch.from_numpy(sim_params.pulse.get_pulse(excitation=excitation).phase) + phase)
     )
     b1_pulse_calibrated = b1_pulse[None, :] * b1_vals[:, None]
     return b1_pulse_calibrated

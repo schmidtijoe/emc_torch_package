@@ -47,6 +47,9 @@ class SimulationConfig(sp.Serializable):
     # resample pulse to lower number (duration over dt) for more efficient computations
     resample_pulse_to_dt_us: float = sp.field(alias="-rptdt", default=5.0)
 
+    # init gpu
+    use_gpu: bool = sp.field(alias="-gpu", default=False)
+
     # toggle multithreading
     # multiprocessing: bool = False
     # give number of CPUs to leave unused when multiprocessing
@@ -137,6 +140,7 @@ class SimulationParameters(sp.Serializable):
     @classmethod
     def from_cli(cls, args: sp.ArgumentParser.parse_args):
         sim_params = SimulationParameters(config=args.config, settings=args.settings)
+        # here we find explicit cmd line args (if not defaults)
         non_default_config, non_default_settings = sim_params._check_non_default_vars()
 
         if args.config.config_file:
@@ -201,7 +205,6 @@ class SimulationParameters(sp.Serializable):
         if err_w_file and not pypsi_set:
             err = f"neither direct {err_w_file} nor pypulseq interface file provided."
             log_module.error(err)
-            raise FileNotFoundError(err)
 
         return sim_params
 

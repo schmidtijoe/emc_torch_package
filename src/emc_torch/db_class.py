@@ -1,20 +1,15 @@
 import logging
 import pickle
 import typing
-from pypsi.parameters import EmcParameters
+from pypulseq_interface.pypsi.parameters import EmcParameters
 from emc_torch import options
 import numpy as np
 import pandas as pd
 import pathlib as plib
-import matplotlib.pyplot as plt
-import matplotlib.cm as cm
-import matplotlib.colors as mpc
-import plotly.express as px
 from plotly.express.colors import sample_colorscale
 import plotly.subplots as psub
 import plotly.graph_objects as go
 
-plt.style.use('ggplot')
 log_module = logging.getLogger(__name__)
 
 
@@ -151,74 +146,6 @@ class DB:
         log_module.info(f"writing file: {fig_file.as_posix()}")
         fig.write_html(fig_file.as_posix())
 
-    def plot_mpl(self, t2_range_ms: tuple = (10.0, 40.0), b1_range: tuple = (0.6, 1.2), save: str = ""):
-        log_module.info("plotting")
-        t2_range_s = 1e-3 * np.array(t2_range_ms)
-        df_selection = self.pd_dataframe[self.pd_dataframe.t2.between(t2_range_s[0], t2_range_s[1], inclusive='both')]
-        df_selection = df_selection[df_selection.b1.between(b1_range[0], b1_range[1], inclusive='both')]
-        t2s = np.unique(df_selection.t2)
-        b1s = np.unique(df_selection.b1)
-
-        x_ax = np.arange(1, self.etl + 1)
-
-        if b1s.shape[0] > 8:
-            b1s = b1s[::2]
-        if b1s.shape[0] > 4:
-            b1s = b1s[:4]
-
-        curves = np.zeros((t2s.shape[0], b1s.shape[0], self.etl))
-        c_range = np.linspace(0.25, 1.0, t2s.shape[0])
-
-        cmaps = [cm.get_cmap('Purples'), cm.get_cmap('Greens'), cm.get_cmap('Oranges'), cm.get_cmap('Reds')]
-        colors = [cmaps[k](c_range) for k in range(b1s.shape[0])]
-
-        for t2_idx in range(t2s.shape[0]):
-            for b1_idx in range(b1s.shape[0]):
-                curve = df_selection.emc_signal[
-                    (df_selection.t2 == t2s[t2_idx]) & (df_selection.b1 == b1s[b1_idx])
-                    ].to_numpy()[0]
-                curves[t2_idx, b1_idx] = np.divide(curve, np.linalg.norm(curve))
-
-        fig = plt.figure(figsize=(14, 6))
-        wr = np.ones(len(cmaps) + 1)
-        wr[0] = 20
-
-        gs = fig.add_gridspec(1, 1 + len(cmaps), width_ratios=wr, wspace=0.1)
-        ax = fig.add_subplot(gs[0])
-        ax.set_xlabel(f"echo #")
-        ax.set_ylabel(f"$l_2$ normalized intensity [A.U.]")
-        ax.set_yticklabels([])
-
-        for b in range(curves.shape[1]):
-            ax.hlines(0.2 * (b + 1), 0, x_ax[-1], color=colors[b][-int(t2s.shape[0] / 3)],
-                      linestyle='dotted', zorder=curves.shape[1] - b + 1)
-            for a in range(curves.shape[0]):
-                ax.plot(x_ax, 0.2 * (b + 1) + curves[a, b], color=colors[b][a], zorder=curves.shape[1] - b + 1)
-
-        norm = mpc.Normalize(vmin=t2_range_ms[0], vmax=t2_range_ms[1])
-        ticks = [[], None]
-        titles = [f"$B_1$: {b1s[0]:.1f} \t", *[f"{b1s[k]:.1f}" for k in np.arange(1, b1s.shape[0])]]
-        cb = NotImplemented
-        for k in range(len(cmaps)):
-            cax = fig.add_subplot(gs[1 + k])
-            cax.grid(False)
-            if k < len(cmaps) - 1:
-                cb = fig.colorbar(cm.ScalarMappable(norm=norm, cmap=cmaps[k]), cax=cax, ticks=ticks[0])
-            else:
-                cb = fig.colorbar(cm.ScalarMappable(norm=norm, cmap=cmaps[k]), cax=cax)
-            cax.set_title(titles[k])
-        cb.set_label(f"$T_2$ [ms]")
-        if save:
-            save_path = plib.Path(save).absolute()
-            if not save_path.suffixes:
-                save_path = save_path.joinpath(f"{self.name}_plot.png")
-            if ".png" not in save_path.suffixes:
-                log_module.info(f"plot saved as .png image. suffix adapted!")
-                save_path = save_path.with_suffix(".png")
-            save_path.parent.mkdir(exist_ok=True, parents=True)
-            plt.savefig(save_path, bbox_inches='tight', transparent=True)
-        plt.show()
-
     def save(self, path: typing.Union[str, plib.Path]):
         path = plib.Path(path).absolute()
         if not path.suffixes:
@@ -315,6 +242,12 @@ class DB:
                         index += 1
         db_pd = pd.DataFrame(d).T
         return cls(pd_dataframe=db_pd, sequence_config=sim_params)
+
+    def get_total_num_curves(self) -> int:
+        num_b1s = len(self.pd_dataframe["b1"].unique())
+        num_t1s = len(self.pd_dataframe["t1"].unique())
+        num_t2s = len(self.pd_dataframe["t2"].unique())
+        return num_b1s * num_t2s * num_t1s
 
 
 if __name__ == '__main__':

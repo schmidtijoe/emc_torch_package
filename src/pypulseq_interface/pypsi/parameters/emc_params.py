@@ -49,6 +49,13 @@ class EmcParameters(sp.helpers.Serializable):
 
     # time for acquisition (of one pixel) * 1e6 <- [(px)s] * 1e6
 
+    # Verse - assuming the respective gradient specified above is the middle / main gradient,
+    # only specify lobes and lobe timing
+    gradient_excitation_verse_lobes: float = 0.0
+    duration_excitation_verse_lobes: float = 0.0
+    gradient_refocus_verse_lobes: float = 0.0
+    duration_refocus_verse_lobes: float = 0.0
+
     def __post_init__(self):
         self.gamma_pi: float = self.gamma_hz * 2 * np.pi
         self.duration_acquisition: float = 1e6 / self.bw  # [us]

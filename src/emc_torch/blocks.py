@@ -46,7 +46,7 @@ class GradPulse:
     def prep_grad_pulse_excitation(cls, params: options.SimulationParameters):
         log_module.debug(f"prep excitation pulse")
 
-        params = cls._set_pulse(params=params, duration_us=params.sequence.duration_excitation)
+        params = cls._set_pulse(params=params, duration_us=params.sequence.duration_excitation, excitation=True)
 
         # calculate and normalize - pulse dims [b1, t]
         pulse_from_pypsi = functions.pulse_calibration_integral(
@@ -73,6 +73,8 @@ class GradPulse:
             duration_pulse_slice_select_us=params.sequence.duration_excitation,
             grad_amp_post=params.sequence.gradient_excitation_rephase + gradient_read_pre_phase,
             duration_post_us=params.sequence.duration_excitation_rephase,
+            grad_amp_verse_lobe=params.sequence.gradient_excitation_verse_lobes,
+            duration_verse_lobe_us=params.sequence.duration_excitation_verse_lobes
         )
         # grad dim [dt], pulse dim [b1, dt]
         # assign vars
@@ -89,7 +91,7 @@ class GradPulse:
     def prep_grad_pulse_refocus(cls, params: options.SimulationParameters, refocus_pulse_number: int):
         log_module.debug(f"prep refocusing pulse: {refocus_pulse_number + 1}")
         # -- prep pulse
-        params = cls._set_pulse(params=params, duration_us=params.sequence.duration_refocus)
+        params = cls._set_pulse(params=params, duration_us=params.sequence.duration_refocus, excitation=False)
         # calculate and normalize
         pulse_from_pypsi = functions.pulse_calibration_integral(
             sim_params=params,
@@ -127,7 +129,9 @@ class GradPulse:
             grad_amp_post=params.sequence.gradient_crush + gradient_read_pre_phase,
             duration_post_us=params.sequence.duration_crush,
             grad_amp_pre=gradient_slice_pre,
-            duration_pre_us=params.sequence.duration_crush
+            duration_pre_us=params.sequence.duration_crush,
+            grad_amp_verse_lobe=params.sequence.gradient_refocus_verse_lobes,
+            duration_verse_lobe_us=params.sequence.duration_refocus_verse_lobes
         )
         # assign vars
         grad_pulse = cls(
@@ -140,21 +144,24 @@ class GradPulse:
         return grad_pulse
 
     @staticmethod
-    def _set_pulse(params: options.SimulationParameters, duration_us: float):
+    def _set_pulse(params: options.SimulationParameters, duration_us: float, excitation: bool):
         log_module.debug(f"\t RF")
         # check rf and given sim details
-        if np.abs(params.pulse.duration_in_us - duration_us) > 1e-5:
-            params.pulse.resample_to_duration(duration_in_us=int(duration_us))
+        if np.abs(params.pulse.get_duration_us(excitation=excitation) - duration_us) > 1e-5:
+            params.pulse.resample_to_duration(duration_in_us=int(duration_us),
+                                              excitation=excitation)
         # resample pulse to given dt in us for more efficient computation
         if np.abs(params.pulse.get_dt_sampling_in_us() - params.config.resample_pulse_to_dt_us) > 1.0:
-            params.pulse.set_shape_on_raster(raster_time_s=params.config.resample_pulse_to_dt_us * 1e-6)
+            params.pulse.set_shape_on_raster(raster_time_s=params.config.resample_pulse_to_dt_us * 1e-6,
+                                             excitation=excitation)
         return params
 
     @staticmethod
     def build_pulse_grad_shapes(
             pulse: torch.tensor, grad_amp_slice_select: float, duration_pulse_slice_select_us: float,
             grad_amp_post: float, duration_post_us: float,
-            duration_pre_us: float = 0.0, grad_amp_pre: float = 0.0):
+            duration_pre_us: float = 0.0, grad_amp_pre: float = 0.0,
+            duration_verse_lobe_us: float = 0.0, grad_amp_verse_lobe: float = 0.0):
         """ want to build the shapes given slice gradient pre, spoil and slice select and align it to the given pulse"""
         # grad amplitudes are values, pulse is a shape already with complex numbers and
         # distributed across different b1 values -> pulse dim [# b1, # pulse sampling steps]
@@ -181,9 +188,27 @@ class GradPulse:
         # allocate tensors
         grad_amp = torch.zeros(num_sample_total)
         pulse_amp = torch.zeros((pulse.shape[0], num_sample_total), dtype=torch.complex128)
-        # fill
+        # ___ fill
+        # pre
         grad_amp[:num_sample_pre] = grad_amp_pre
-        grad_amp[num_sample_pre:num_sample_pre + num_sample_pulse] = grad_amp_slice_select
+        # slice select, check for verse
+        if duration_verse_lobe_us > 1e-3:
+            # might have to address pulse - grad delay timing mismatches here
+            num_samples_lobe = int(duration_verse_lobe_us / dt_us)
+            num_samples_plateau = num_sample_pulse - 2 * num_samples_lobe
+            s_pts = np.array([
+                0,
+                num_samples_lobe,
+                num_samples_lobe + num_samples_plateau,
+                2 * num_samples_lobe + num_samples_plateau
+            ])
+            s_vals = np.array([
+                grad_amp_verse_lobe, grad_amp_slice_select, grad_amp_slice_select, grad_amp_verse_lobe
+            ])
+            middle_amp = np.interp(x=np.arange(num_sample_pulse), xp=s_pts, fp=s_vals)
+        else:
+            middle_amp = grad_amp_slice_select
+        grad_amp[num_sample_pre:num_sample_pre + num_sample_pulse] = middle_amp
         grad_amp[num_sample_pre + num_sample_pulse:] = grad_amp_post
         pulse_amp[:, num_sample_pre:num_sample_pre + num_sample_pulse] = pulse
         t_total = num_sample_total * dt_us
@@ -337,4 +362,3 @@ class Timing:
     def set_device(self, device: torch.device):
         self.time_post_pulse = self.time_post_pulse.to(device)
         self.time_pre_pulse = self.time_pre_pulse.to(device)
-

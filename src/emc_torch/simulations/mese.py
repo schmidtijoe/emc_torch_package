@@ -9,9 +9,8 @@ log_module = logging.getLogger(__name__)
 
 
 class MESE(Simulation):
-    def __init__(self, sim_params: options.SimulationParameters,
-                 device: torch.device = torch.device("cpu"), num_mag_evol_plot: int = 10):
-        super().__init__(sim_params=sim_params, device=device, num_mag_evol_plot=num_mag_evol_plot)
+    def __init__(self, sim_params: options.SimulationParameters):
+        super().__init__(sim_params=sim_params)
 
     def _prep(self):
         log_module.info("\t - MESE sequence")
@@ -37,6 +36,7 @@ class MESE(Simulation):
             self.gps_refocus[1].plot(sim_data=self.data, fig_path=self.fig_path)
             self.gp_se_acquisition.plot(sim_data=self.data, fig_path=self.fig_path)
 
+    def _set_device(self):
         # set devices
         self.gp_excitation.set_device(self.device)
         self.timing.set_device(self.device)
@@ -44,7 +44,7 @@ class MESE(Simulation):
             gp.set_device(self.device)
         self.gp_se_acquisition.set_device(self.device)
 
-    def simulate(self):
+    def _simulate(self):
         """ want to set up gradients and pulses like in the mese standard protocol
         For this we need all parts that are distinct and then set them up to pulse the calculation through
         """
@@ -155,4 +155,3 @@ class MESE(Simulation):
             self.data.emc_signal_phase = torch.angle(torch.sum(image_tensor, dim=-1))
 
         self.data.time = time.time() - t_start
-

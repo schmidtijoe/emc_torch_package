@@ -1,16 +1,16 @@
 from emc_torch import simulations, options, db_class
 import logging
-import torch
+import pathlib as plib
 log_module = logging.getLogger(__name__)
 logging.getLogger('simple_parsing').setLevel(logging.WARNING)
 
 
-def main(sim_params: options.SimulationParameters, device: torch.device = torch.device("cpu")):
+def main(sim_params: options.SimulationParameters):
 
     sim_params.config.display()
 
     if sim_params.config.sim_type.startswith("mese"):
-        sim_obj = simulations.MESE(sim_params=sim_params, device=device)
+        sim_obj = simulations.MESE(sim_params=sim_params)
     # elif sim_params.config.sim_type == "megesse":
     #     sim_obj = simulations.MEGESSE(sim_params=sim_params, device=device)
     # elif sim_params.config.sim_type == "fid":
@@ -35,9 +35,17 @@ def main(sim_params: options.SimulationParameters, device: torch.device = torch.
         # plot database
         db.plot(sim_obj.fig_path)
 
+    save_path = plib.Path(sim_params.config.save_path).absolute()
+    if sim_params.config.config_file:
+        c_name = plib.Path(sim_params.config.config_file).absolute().stem
+    else:
+        c_name = "emc_config"
+    save_path = save_path.joinpath(c_name).with_suffix(".json")
+    logging.info(f"Save Config File: {save_path.as_posix()}")
+    sim_params.save_json(save_path.as_posix(), indent=2)
+
 
 if __name__ == '__main__':
-
     logging.basicConfig(format='%(asctime)s %(levelname)s :: %(name)s --  %(message)s',
                         datefmt='%I:%M:%S', level=logging.INFO)
     logging.info("__________________________________________________________")
