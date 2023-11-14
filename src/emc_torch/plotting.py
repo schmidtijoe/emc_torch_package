@@ -123,13 +123,13 @@ def plot_emc_sim_data(sim_data: options.SimulationData, out_path: plib.Path | st
     for idx_t2 in range(num_t2s):
         for idx_b1 in range(num_b1s):
             fig.add_trace(
-                go.Scatter(x=x_ax, y=emc_mag[idx_t2, idx_b1],
+                go.Scattergl(x=x_ax, y=emc_mag[idx_t2, idx_b1],
                            name=f"mag_emc"),
                 row=1 + idx_t2, col=1 + idx_b1,
                 secondary_y=False
             )
             fig.add_trace(
-                go.Scatter(x=x_ax, y=emc_phase[idx_t2, idx_b1] / torch.pi,
+                go.Scattergl(x=x_ax, y=emc_phase[idx_t2, idx_b1] / torch.pi,
                            name=f"phase_emc"),
                 row=1 + idx_t2, col=1 + idx_b1,
                 secondary_y=True

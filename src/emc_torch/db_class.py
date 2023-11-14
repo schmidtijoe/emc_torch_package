@@ -57,14 +57,11 @@ class DB:
         df["b1"] = df["b1"].round(2)
         df["echo"] = df["echo"] + 1
         if t2_range_ms is not None:
-            df = df[t2_range_ms[0] < df["t2"]]
-            df = df[df["t2"] < t2_range_ms[1]]
+            df = df[(df["t2"] >= t2_range_ms[0]) & (df["t2"] < t2_range_ms[1])]
         if t1_range_s is not None:
-            df = df[t1_range_s[0] < df["t1"]]
-            df = df[df["t1"] < t1_range_s[1]]
+            df = df[(df["t1"] >= t1_range_s[0]) & (df["t1"] < t1_range_s[1])]
         if b1_range is not None:
-            df = df[b1_range[0] < df["b1"]]
-            df = df[df["b1"] < b1_range[1]]
+            df = df[(df["b1"] >= b1_range[0]) & (df["b1"] < b1_range[1])]
         # for now we only take one t1 value
         df = df[df["t1"] == df["t1"].unique()[0]].drop(columns=["t1"]).drop(columns="index").reset_index(drop=True)
         # setup colorscales to use
@@ -72,6 +69,17 @@ class DB:
         c_scales = ["Purples", "Oranges", "Greens", "Reds", "Blues"]
         echo_ax = df["echo"].to_numpy()
         # setup subplots
+        while len(df["b1"].unique()) > len(c_scales):
+            # drop randomly chosen b1 value
+            b1_vals = df["b1"].unique().tolist()
+            drop_idx = np.random.randint(len(b1_vals))
+            b1_vals.pop(drop_idx)
+            df = df[df["b1"].isin(b1_vals)]
+        # setup subplots
+        while len(df["t2"].unique()) > 20:
+            # drop every second t2 value
+            t2_vals = df["t2"].unique().tolist()[::2]
+            df = df[df["t2"].isin(t2_vals)]
         num_plot_b1s = len(df["b1"].unique())
         titles = ["Magnitude", "Phase"]
         fig = psub.make_subplots(
@@ -125,21 +133,6 @@ class DB:
             xref="x domain", yref="y domain", x=1.005, y=-0.5, showarrow=False,
             text="T2 [ms]", row=1, col=1, textangle=-90, font=dict(size=14)
         )
-        # df_mag = df[["t2", "b1", "emc_mag", "echo"]].rename(columns={"emc_mag": "data"})
-        # df_mag = pd.concat((df_mag.reset_index(), pd.Series(["emc_mag"] * len(df_mag), name="label")), axis=1)
-        # df_mag["data"] = df_mag["data"] / df_mag["data"].abs().max()
-        # df_phase = df[["t2", "b1", "emc_phase", "echo"]].rename(columns={"emc_phase": "data"})
-        # df_phase = pd.concat((df_phase.reset_index(), pd.Series(["emc_phase"] * len(df_mag), name="label")), axis=1)
-        # df_phase["data"] = df_phase["data"] / np.pi
-        # df_plot = pd.concat((df_mag, df_phase))
-        # fig = px.line(df_plot, x="echo", y="data", color="t2", markers=True, facet_col="b1", facet_row="label",
-        #               labels={
-        #                   "echo": "Echo Number",
-        #                   "data": "Echo Magnitude | phase [A.U. | pi]",
-        #                   "t2": "T2 [ms]",
-        #                   "b1": "B1"
-        #               })
-        # fig.update_yaxes(range=[-1, 1])
 
         out_path = plib.Path(out_path).absolute()
         fig_file = out_path.joinpath(f"emc_db{name}").with_suffix(".html")

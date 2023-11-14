@@ -61,10 +61,7 @@ class MESE(Simulation):
         )
         if self.params.config.visualize:
             # save excitation profile snapshot
-            self.set_magnetization_profile_snap(
-                magnetization_profile=self.data.magnetization_propagation,
-                snap_name="excitation"
-            )
+            self.set_magnetization_profile_snap(snap_name="excitation")
 
         # calculate timing matrices (there are only 4)
         # first refocus
@@ -108,10 +105,7 @@ class MESE(Simulation):
 
                 if self.params.config.visualize:
                     # save profile snapshot after pulse
-                    self.set_magnetization_profile_snap(
-                        magnetization_profile=self.data.magnetization_propagation,
-                        snap_name=f"refocus_{loop_idx+1}_post_pulse"
-                    )
+                    self.set_magnetization_profile_snap(snap_name=f"refocus_{loop_idx+1}_post_pulse")
 
                 # acquisition
                 if self.params.config.signal_fourier_sampling:
@@ -131,10 +125,7 @@ class MESE(Simulation):
 
                 if self.params.config.visualize:
                     # save excitation profile snapshot
-                    self.set_magnetization_profile_snap(
-                        magnetization_profile=self.data.magnetization_propagation,
-                        snap_name=f"refocus_{loop_idx + 1}_post_acquisition"
-                    )
+                    self.set_magnetization_profile_snap(snap_name=f"refocus_{loop_idx + 1}_post_acquisition")
 
         if self.params.config.signal_fourier_sampling:
             log_module.debug('Signal array processing fourier')

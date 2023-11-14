@@ -205,7 +205,7 @@ class GradPulse:
             s_vals = np.array([
                 grad_amp_verse_lobe, grad_amp_slice_select, grad_amp_slice_select, grad_amp_verse_lobe
             ])
-            middle_amp = np.interp(x=np.arange(num_sample_pulse), xp=s_pts, fp=s_vals)
+            middle_amp = torch.from_numpy(np.interp(x=np.arange(num_sample_pulse), xp=s_pts, fp=s_vals))
         else:
             middle_amp = grad_amp_slice_select
         grad_amp[num_sample_pre:num_sample_pre + num_sample_pulse] = middle_amp

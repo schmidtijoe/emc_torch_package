@@ -35,14 +35,19 @@ def main(sim_params: options.SimulationParameters):
         # plot database
         db.plot(sim_obj.fig_path)
 
+    # save files
     save_path = plib.Path(sim_params.config.save_path).absolute()
     if sim_params.config.config_file:
         c_name = plib.Path(sim_params.config.config_file).absolute().stem
     else:
         c_name = "emc_config"
-    save_path = save_path.joinpath(c_name).with_suffix(".json")
-    logging.info(f"Save Config File: {save_path.as_posix()}")
-    sim_params.save_json(save_path.as_posix(), indent=2)
+    save_file = save_path.joinpath(c_name).with_suffix(".json")
+    logging.info(f"Save Config File: {save_file.as_posix()}")
+    sim_params.save_json(save_file.as_posix(), indent=2)
+    # database
+    save_file = save_path.joinpath(sim_params.config.database_name)
+    logging.info(f"Save DB File: {save_file.as_posix()}")
+    db.save(save_file)
 
 
 if __name__ == '__main__':

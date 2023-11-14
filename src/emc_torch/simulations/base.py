@@ -26,6 +26,10 @@ class Simulation(abc.ABC):
         )
         self.fig_path: plib.Path = NotImplemented
         self._fig_magnetization_profile_snaps: list = []
+        # pick middle sim range values for magnetization profile snaps
+        self._fig_t1_idx: int = int(self.data.t1_vals.shape[0] / 2)  # t1
+        self._fig_t2_idx: int = int(self.data.t2_vals.shape[0] / 2)  # t2
+        self._fig_b1_idx: int = int(self.data.b1_vals.shape[0] / 2)  # b1
 
         # setup plotting
         if self.params.config.visualize:
@@ -34,10 +38,13 @@ class Simulation(abc.ABC):
             out_path.mkdir(parents=True, exist_ok=True)
             self.fig_path = out_path
 
+            # set up indices for which we save the snaps
+            # (otherwise we need to transfer the whole t1s * t2s * b1s * sample_num * 4 array
+            # every time we save the profile)
+            # choose first t1
+
             # save initial magnetization to snaps
-            self.set_magnetization_profile_snap(
-                magnetization_profile=self.data.magnetization_propagation, snap_name="initial"
-            )
+            self.set_magnetization_profile_snap(snap_name="initial")
 
         # setup acquisition
         self.gp_se_acquisition = blocks.GradPulse.prep_acquisition(params=self.params)
@@ -61,11 +68,18 @@ class Simulation(abc.ABC):
     def _set_device(self):
         """ sequence specific setting to put relevant tensors on device """
 
-    def set_magnetization_profile_snap(self, magnetization_profile: torch.tensor, snap_name: str):
+    def set_magnetization_profile_snap(self, snap_name: str):
         """ add magnetization profile snapshot to list for plotting """
-        self._fig_magnetization_profile_snaps.append(
-            {"name": snap_name, "profile": magnetization_profile.clone().detach().cpu()}
-        )
+        t1_choice_idx = min([self.data.magnetization_propagation.shape[0] - 1, self._fig_t1_idx])
+        t2_choice_idx = min([self.data.magnetization_propagation.shape[1] - 1, self._fig_t2_idx])
+        b1_choice_idx = min([self.data.magnetization_propagation.shape[2] - 1, self._fig_b1_idx])
+        mag_profile = self.data.magnetization_propagation[
+            t1_choice_idx, t2_choice_idx, b1_choice_idx
+        ].clone().detach().cpu()
+        self._fig_magnetization_profile_snaps.append({
+            "name": snap_name,
+            "profile": mag_profile
+        })
 
     def simulate(self):
         """ sequence specific definition of the simulation """
@@ -76,12 +90,9 @@ class Simulation(abc.ABC):
 
     def plot_magnetization_profiles(self, animate: bool = True):
         # pick middle sim range values
-        b1_idx = int(self.data.b1_vals.shape[0] / 2)
-        b1_val = f"{self.data.b1_vals[b1_idx].numpy(force=True):.2f}".replace(".", "p")
-        t2_idx = int(self.data.t2_vals.shape[0] / 2)
-        t2_val = f"{1000*self.data.t2_vals[t2_idx].numpy(force=True):.1f}ms".replace(".", "p")
-        t1_idx = int(self.data.t1_vals.shape[0] / 2)
-        t1_val = f"{self.data.t1_vals[t1_idx].numpy(force=True):.2f}s".replace(".", "p")
+        b1_val = f"{self.data.b1_vals[self._fig_b1_idx].numpy(force=True):.2f}".replace(".", "p")
+        t2_val = f"{1000*self.data.t2_vals[self._fig_t2_idx].numpy(force=True):.1f}ms".replace(".", "p")
+        t1_val = f"{self.data.t1_vals[self._fig_t1_idx].numpy(force=True):.2f}s".replace(".", "p")
 
         profiles = []
         dims = []
@@ -92,11 +103,11 @@ class Simulation(abc.ABC):
             entry_dict = self._fig_magnetization_profile_snaps[entry_idx]
             name = entry_dict["name"]
             # loop to iterating characters, see if we are on same refocussing
-            for chr in name:
+            for character in name:
                 # checking if character is numeric,
                 # saving index
-                if chr.isdigit():
-                    temp = name.index(chr)
+                if character.isdigit():
+                    temp = name.index(character)
                     name = name[:temp+1]
                     break
             if name == last_name:
@@ -105,10 +116,6 @@ class Simulation(abc.ABC):
                 dim_extend = ""
             # on inital magnetization no different values are available
             mag_prof = entry_dict["profile"].numpy(force=True)
-            t1_choice_idx = np.min([mag_prof.shape[0] - 1, t1_idx])
-            t2_choice_idx = np.min([mag_prof.shape[1] - 1, t2_idx])
-            b1_choice_idx = np.min([mag_prof.shape[2] - 1, b1_idx])
-            mag_prof = mag_prof[t1_choice_idx, t2_choice_idx, b1_choice_idx]
             profiles.extend(np.abs(mag_prof[:, 0] + 1j * mag_prof[:, 1]))
             dims.extend([f"abs{dim_extend}"] * mag_prof.shape[0])
             profiles.extend(np.angle(mag_prof[:, 0] + 1j * mag_prof[:, 1]) / np.pi)
