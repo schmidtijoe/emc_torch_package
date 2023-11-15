@@ -1,161 +1,194 @@
-from emc_sim import options, blocks, functions
-from emc_sim.simulations.base import Simulation
+from emc_torch import options, blocks, functions
+from emc_torch.simulations.base import Simulation
 import torch
+import tqdm
 import logging
-import time
+
 log_module = logging.getLogger(__name__)
 
 
 class MEGESSE(Simulation):
-    def __init__(self, sim_params: options.SimulationParameters,
-                 device: torch.device = torch.device("cpu"), num_mag_evol_plot: int = 10):
-        super().__init__(sim_params=sim_params, device=device, num_mag_evol_plot=num_mag_evol_plot)
+    def __init__(self, sim_params: options.SimulationParameters):
+        super().__init__(sim_params=sim_params)
 
     def _prep(self):
-        """ want to set up gradients and pulses like in the mese standard protocol
-        For this we need all parts that are distinct and then set them up to pulss the calculation through
+        """ want to set up gradients and pulses like in the megesse jstmc protocol
+        For this we need all parts that are distinct and then set them up to push the calculation through
         """
-        self.gp_excitation = blocks.GradPulse.prep_grad_pulse(
-            pulse_type='Excitation',
-            pulse_number=0,
-            sym_spoil=False,
-            params=self.params,
-            balanced_read_grads=False
-        )
+        log_module.info("\t - MEGESSE sequence")
+        log_module.info('\t - pulse gradient preparation')
+        # excitation pulse
+        self.gp_excitation = blocks.GradPulse.prep_grad_pulse_excitation(params=self.params)
+        # its followed by the partial fourier readout GRE, if we dont sample the read and just use summing
+        # we can assume the partial fourier is dealt with upon reconstruction.
+        # hence we use just the acquisition with appropriate timing, and ignore read directions for now
 
-        gp_refocus_1 = blocks.GradPulse.prep_grad_pulse(
-            pulse_type='Refocusing_1',
-            pulse_number=1,
-            sym_spoil=False,
-            params=self.params,
-            balanced_read_grads=False
-        )
         # built list of grad_pulse events, acquisition and timing
-        grad_pulses = [gp_refocus_1]
-        for r_idx in torch.arange(2, self.params.sequence.etl + 1):
-            gp_refocus = blocks.GradPulse.prep_grad_pulse(
-                pulse_type='Refocusing',
-                pulse_number=r_idx,
-                sym_spoil=True,
-                params=self.params,
-                balanced_read_grads=False
+        self.gps_refocus = []
+        for r_idx in torch.arange(self.params.sequence.etl):
+            gp_refocus = blocks.GradPulse.prep_grad_pulse_refocus(
+                params=self.params, refocus_pulse_number=r_idx, force_sym_spoil=True
             )
-            grad_pulses.append(gp_refocus)
+            self.gps_refocus.append(gp_refocus)
 
-        self.gps_refocus = grad_pulses
-
-        self.gp_acquisition = blocks.GradPulse.prep_acquisition(params=self.params)
-
-        log_module.debug(f"calculate timing")
-        self.timing = blocks.Timing.build_fill_timing_mese(self.params)
         if self.params.config.visualize:
-            self.gp_excitation.plot(self.data)
-            self.gps_refocus[0].plot(self.data)
-            self.gps_refocus[1].plot(self.data)
-            self.gp_acquisition.plot(self.data)
+            self.gp_excitation.plot(self.data, fig_path=self.fig_path)
+            self.gps_refocus[0].plot(self.data, fig_path=self.fig_path)
+            self.gps_refocus[1].plot(self.data, fig_path=self.fig_path)
+            self.gp_acquisition.plot(self.data, fig_path=self.fig_path)
+        # for megesse the etl is number of refocussing pulses, not number of echoes,
+        # we need to reset the simulation data with adopted etl
+        # 1 gre, and then for every pulse in the etl there are 3 echoes -> etl = 3*etl + 1
+        self.rf_etl = self.params.sequence.etl
+        self.params.sequence.etl = 3 * self.rf_etl + 1
+        self.data: options.SimulationData = options.SimulationData.from_sim_parameters(
+            sim_params=self.params, device=self.device
+        )
+        # we have partial fourier in first readout
+        self.partial_fourier_gre1: float = 3 / 4
 
+    def _set_device(self):
         # set devices
+        self.sequence_timings.set_device(self.device)
         self.gp_excitation.set_device(self.device)
-        self.timing.set_device(self.device)
         for gp in self.gps_refocus:
             gp.set_device(self.device)
         self.gp_acquisition.set_device(self.device)
 
-    def simulate(self):
+    def _register_sequence_timings(self):
+        log_module.info(f"\t - calculate sequence timing")
+        # all in [us]
+
+        # after excitation
+        # first readout echo time
+        t_gre1 = (
+                self.params.sequence.duration_excitation / 2 + self.params.sequence.duration_excitation_verse_lobes +
+                self.params.sequence.duration_excitation_rephase +
+                (self.partial_fourier_gre1 - 0.5) * self.params.sequence.duration_acquisition
+        )
+        # first set echo time
+        t_gre1_set = self.params.sequence.tes[0] * 1e6
+        # set var
+        self.sequence_timings.register_timing(name="exc_gre1", value_us=t_gre1_set - t_gre1)
+
+        # echo to refocusing
+        t_gre1_ref1 = (
+                self.params.sequence.duration_acquisition * 0.5 + self.params.sequence.duration_crush +
+                self.params.sequence.duration_refocus_verse_lobes + self.params.sequence.duration_refocus / 2
+        )
+        # set midpoint gre1 til ref1 is half of se (tes[2]) time minus first echo
+        t_gre1_ref1_set = 1e6 * (self.params.sequence.tes[2] / 2 - self.params.sequence.tes[0])
+        # set var
+        self.sequence_timings.register_timing(name="gre1_ref1", value_us=t_gre1_ref1_set - t_gre1_ref1)
+
+        # refocusing to gradient readout
+        t_ref1_gre2 = (
+                self.params.sequence.duration_refocus / 2 + self.params.sequence.duration_refocus_verse_lobes +
+                self.params.sequence.duration_crush + self.params.sequence.duration_acquisition / 2
+        )
+        # set midpoint second gradient echo is tes[1] minus refocusing time (half of spin echo time tes[2])
+        t_ref_gre_set = 1e6 * (self.params.sequence.tes[1] - self.params.sequence.tes[2] / 2)
+        self.sequence_timings.register_timing(name="ref_gre", value_us=t_ref_gre_set - t_ref1_gre2)
+
+        # gradient echo 2 to spin echo (two halves of the acquisition duration
+        t_gre2_se = self.params.sequence.duration_acquisition
+        # set midpoints of echoes subtracted
+        t_gre2_se_set = 1e6 * (self.params.sequence.tes[2] - self.params.sequence.tes[1])
+        # set var
+        self.sequence_timings.register_timing(name="gre_se", value_us=t_gre2_se_set - t_gre2_se)
+
+    def _simulate(self):
+        if self.params.config.signal_fourier_sampling:
+            # not yet implemented, # ToDo
+            err = "signal fourier sampling not yet implemented"
+            log_module.error(err)
+            raise AttributeError(err)
+
         log_module.debug(f"Simulating MEGESSE sequence")
-        # t_start = time.time()
-        # # --- starting sim matrix propagation --- #
-        # log_module.debug("calculate matrix propagation")
-        # # excitation
-        # sim_data = functions.propagate_gradient_pulse_relax(
-        #     pulse_x=gp_excitation.data_pulse_x, pulse_y=gp_excitation.data_pulse_y, grad=gp_excitation.data_grad,
-        #     sim_data=sim_data, dt_s=gp_excitation.dt_sampling_steps * 1e-6
-        # )
-        # # plot excitation profile
-        # fig = plotting.plot_running_mag(fig, sim_data, id=plot_idx)
-        # plot_idx += 1
-        #
-        # # sample partial fourier gradient echo readout
-        # # ToDo
-        #
-        # # calculate timing matrices (there are only 4)
-        # # first refocus
-        # mat_prop_ref1_pre_time = functions.matrix_propagation_relaxation_multidim(
-        #     dt_s=timing.time_pre_pulse[0] * 1e-6, sim_data=sim_data
-        # )
-        # mat_prop_ref1_post_time = functions.matrix_propagation_relaxation_multidim(
-        #     dt_s=timing.time_post_pulse[0] * 1e-6, sim_data=sim_data
-        # )
-        # # other refocus
-        # mat_prop_ref_pre_time = functions.matrix_propagation_relaxation_multidim(
-        #     dt_s=timing.time_pre_pulse[1] * 1e-6, sim_data=sim_data
-        # )
-        # mat_prop_ref_post_time = functions.matrix_propagation_relaxation_multidim(
-        #     dt_s=timing.time_post_pulse[1] * 1e-6, sim_data=sim_data
-        # )
-        # log_module.debug("loop through refocusing")
-        # with tqdm.trange(sim_params.sequence.etl) as t:
-        #     t.set_description(f"ref pulse")
-        #     for loop_idx in t:
-        #         # timing
-        #         if loop_idx == 0:
-        #             m_p_pre = mat_prop_ref1_pre_time
-        #         else:
-        #             m_p_pre = mat_prop_ref_pre_time
-        #         sim_data = functions.propagate_matrix_mag_vector(m_p_pre, sim_data=sim_data)
-        #         # pulse
-        #         sim_data = functions.propagate_gradient_pulse_relax(
-        #             pulse_x=gps_refocus[loop_idx].data_pulse_x, pulse_y=gps_refocus[loop_idx].data_pulse_y,
-        #             grad=gps_refocus[loop_idx].data_grad, sim_data=sim_data,
-        #             dt_s=gps_refocus[loop_idx].dt_sampling_steps * 1e-6
-        #         )
-        #         # timing
-        #         if loop_idx == 0:
-        #             m_p_post = mat_prop_ref1_post_time
-        #         else:
-        #             m_p_post = mat_prop_ref_post_time
-        #         sim_data = functions.propagate_matrix_mag_vector(m_p_post, sim_data=sim_data)
-        #
-        #         # ToDo acquisition gre
-        #         sim_data = functions.sample_acquisition(
-        #             etl_idx=loop_idx, sim_params=sim_params, sim_data=sim_data,
-        #             acquisition_grad=acquisition.data_grad, dt_s=acquisition.dt_sampling_steps * 1e-6
-        #         )
-        #         fig = plotting.plot_running_mag(fig, sim_data, id=plot_idx)
-        #         plot_idx += 1
-        #         # ToDo acquisition se
-        #         sim_data = functions.sample_acquisition(
-        #             etl_idx=loop_idx, sim_params=sim_params, sim_data=sim_data,
-        #             acquisition_grad=acquisition.data_grad, dt_s=acquisition.dt_sampling_steps * 1e-6
-        #         )
-        #         fig = plotting.plot_running_mag(fig, sim_data, id=plot_idx)
-        #         plot_idx += 1
-        #         # ToDo acquisition gre
-        #         sim_data = functions.sample_acquisition(
-        #             etl_idx=loop_idx, sim_params=sim_params, sim_data=sim_data,
-        #             acquisition_grad=acquisition.data_grad, dt_s=acquisition.dt_sampling_steps * 1e-6
-        #         )
-        #         fig = plotting.plot_running_mag(fig, sim_data, id=plot_idx)
-        #         plot_idx += 1
-        #
-        #         fig = plotting.plot_running_mag(fig, sim_data, id=plot_idx)
-        #         plot_idx += 1
-        #
-        # log_module.debug('Signal array processing fourier')
-        # image_tensor = torch.fft.ifftshift(
-        #     torch.fft.ifft(sim_data.signal_tensor, dim=-1),
-        #     dim=-1
-        # )
-        # sim_data.emc_signal_mag = 2 * torch.sum(torch.abs(image_tensor), dim=-1) / sim_params.settings.acquisition_number
-        # sim_data.emc_signal_phase = 2 * torch.sum(torch.angle(image_tensor),
-        #                                           dim=-1) / sim_params.settings.acquisition_number
-        #
-        # if sim_params.sequence.etl % 2 > 0:
-        #     # for some reason we get a shift from the fft when used with odd array length.
-        #     sim_data.emc_signal_mag = torch.roll(sim_data.emc_signal_mag, 1)
-        #     sim_data.emc_signal_phase = torch.roll(sim_data.emc_signal_phase, 1)
-        #
-        # sim_data.time = time.time() - t_start
-        #
-        # plotting.display_running_plot(fig)
-        pass
+        # --- starting sim matrix propagation --- #
+        log_module.debug("calculate matrix propagation")
+        # excitation
+        self.data = functions.propagate_gradient_pulse_relax(
+            pulse_x=self.gp_excitation.data_pulse_x, pulse_y=self.gp_excitation.data_pulse_y,
+            grad=self.gp_excitation.data_grad,
+            sim_data=self.data, dt_s=self.gp_excitation.dt_sampling_steps_us * 1e-6
+        )
+        if self.params.config.visualize:
+            # save excitation profile snapshot
+            self.set_magnetization_profile_snap("excitation")
+
+        # sample partial fourier gradient echo readout
+        # delay
+        delay_relax = functions.matrix_propagation_relaxation_multidim(
+            dt_s=self.sequence_timings.get_timing_s("exc_gre1"), sim_data=self.data
+        )
+        self.data = functions.propagate_matrix_mag_vector(delay_relax, sim_data=self.data)
+
+        # acquisition
+        # take the sum of the contributions of the individual spins at pf readout echo time
+        self.data = functions.sum_sample_acquisition(
+            etl_idx=0, sim_params=self.params, sim_data=self.data,
+            acquisition_duration_s=self.params.sequence.duration_acquisition * 1e-6,
+            partial_fourier=self.partial_fourier_gre1
+        )
+        if self.params.config.visualize:
+            # save excitation profile snapshot
+            self.set_magnetization_profile_snap("gre1_post_acquisition")
+        # delay
+        delay_relax = functions.matrix_propagation_relaxation_multidim(
+            dt_s=self.sequence_timings.get_timing_s("gre1_ref1"), sim_data=self.data
+        )
+        self.data = functions.propagate_matrix_mag_vector(delay_relax, sim_data=self.data)
+
+        # have only two timings left repeatedly, hence we can calculate the matrices already
+        mat_prop_ref_gre_time = functions.matrix_propagation_relaxation_multidim(
+            dt_s=self.sequence_timings.get_timing_s("ref_gre"), sim_data=self.data
+        )
+        mat_prop_gre_se_time = functions.matrix_propagation_relaxation_multidim(
+            dt_s=self.sequence_timings.get_timing_s("gre_se"), sim_data=self.data
+        )
+        # rf loop
+        for rf_idx in tqdm.trange(self.rf_etl, desc="processing sequence, refocusing pulse loop"):
+            # propagate pulse
+            self.data = functions.propagate_gradient_pulse_relax(
+                pulse_x=self.gps_refocus[rf_idx].data_pulse_x,
+                pulse_y=self.gps_refocus[rf_idx].data_pulse_y,
+                grad=self.gps_refocus[rf_idx].data_grad,
+                sim_data=self.data,
+                dt_s=self.gps_refocus[rf_idx].dt_sampling_steps_us * 1e-6
+            )
+            if self.params.config.visualize:
+                # save profile snapshot after pulse
+                self.set_magnetization_profile_snap(snap_name=f"refocus_{rf_idx + 1}_post_pulse")
+
+            # timing from ref to gre
+            self.data = functions.propagate_matrix_mag_vector(mat_prop_ref_gre_time, sim_data=self.data)
+            # acquisition gre
+            # take the sum of the contributions of the individual spins at central readout echo time
+            self.data = functions.sum_sample_acquisition(
+                etl_idx=1 + rf_idx * 3, sim_params=self.params, sim_data=self.data,
+                acquisition_duration_s=self.params.sequence.duration_acquisition * 1e-6
+            )
+            # delay between readouts
+            self.data = functions.propagate_matrix_mag_vector(mat_prop_gre_se_time, sim_data=self.data)
+            # acquisition se
+            # take the sum of the contributions of the individual spins at central readout echo time
+            self.data = functions.sum_sample_acquisition(
+                etl_idx=2 + rf_idx * 3, sim_params=self.params, sim_data=self.data,
+                acquisition_duration_s=self.params.sequence.duration_acquisition * 1e-6
+            )
+            # delay between readouts
+            self.data = functions.propagate_matrix_mag_vector(mat_prop_gre_se_time, sim_data=self.data)
+            # acquisition gre
+            # take the sum of the contributions of the individual spins at central readout echo time
+            self.data = functions.sum_sample_acquisition(
+                etl_idx=3 + rf_idx * 3, sim_params=self.params, sim_data=self.data,
+                acquisition_duration_s=self.params.sequence.duration_acquisition * 1e-6
+            )
+            # delay to pulse
+            self.data = functions.propagate_matrix_mag_vector(mat_prop_ref_gre_time, sim_data=self.data)
+
+            if self.params.config.visualize:
+                # save excitation profile snapshot
+                self.set_magnetization_profile_snap(snap_name=f"refocus_{rf_idx + 1}_post_acquisition")
+

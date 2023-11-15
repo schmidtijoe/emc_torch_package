@@ -7,6 +7,10 @@ import pathlib as plib
 log_module = logging.getLogger(__name__)
 
 
+#ToDo
+# For pypulseq we can implement a pulse train straight from the events and kernels and ship it to the emc simulation
+# all timings and shapes would be defined
+
 class GradPulse:
     def __init__(self,
                  pulse_type: str = 'Excitation',
@@ -88,7 +92,8 @@ class GradPulse:
         return grad_pulse
 
     @classmethod
-    def prep_grad_pulse_refocus(cls, params: options.SimulationParameters, refocus_pulse_number: int):
+    def prep_grad_pulse_refocus(cls, params: options.SimulationParameters, refocus_pulse_number: int,
+                                force_sym_spoil: bool = False):
         log_module.debug(f"prep refocusing pulse: {refocus_pulse_number + 1}")
         # -- prep pulse
         params = cls._set_pulse(params=params, duration_us=params.sequence.duration_refocus, excitation=False)
@@ -117,7 +122,7 @@ class GradPulse:
 
         # gradient before pulse = rephasing of read gradient plus spoiling
         gradient_slice_pre = params.sequence.gradient_crush + gradient_read_pre_phase
-        if refocus_pulse_number == 0:
+        if refocus_pulse_number == 0 and not force_sym_spoil:
             # on first refocusing pulse we dont need the symmetrical slice gradients
             # since its included in the rephaser of the excitation pulse
             gradient_slice_pre = 0.0
@@ -301,64 +306,66 @@ class GradPulse:
 
 
 class Timing:
-    def __init__(self, time_pre_pulse: torch.tensor = torch.zeros(1),
-                 time_post_pulse: torch.tensor = torch.zeros(1)):
-        self.time_post_pulse = time_post_pulse
-        self.time_pre_pulse = time_pre_pulse
+    def __init__(self, value_us: float):
+        self.value_us: torch.tensor = torch.tensor(value_us)
 
-    @classmethod
-    def build_fill_timing_mese(cls, params: options.SimulationParameters = options.SimulationParameters()):
-        """
-        Create a timing scheme: save time in [us] in array[2] -> [0] before pulse, [1] after pulse.
-        For all refocusing pulses, i.e. ETL times
-        Highly Sequence scheme dependent!
-        :return: timing array
-        """
-        # all in [us]
-        time_pre_pulse = torch.zeros(params.sequence.etl)
-        time_post_pulse = torch.zeros(params.sequence.etl)
+        # sanity check
+        if value_us < 1e-12:
+            err = f"negative delay set"
+            log_module.error(err)
+            raise ValueError(err)
 
-        # after excitation - before first refocusing:
-        time_pre_pulse[0] = 1000 * params.sequence.esp / 2 - (
-                params.sequence.duration_excitation / 2 + params.sequence.duration_excitation_rephase
-                + params.sequence.duration_refocus / 2
-        )
-        # refocusing pulse...
-        # after first refocusing
-        time_post_pulse[0] = 1000 * params.sequence.esp / 2 - (
-                params.sequence.duration_refocus / 2 + params.sequence.duration_crush +
-                params.sequence.duration_acquisition / 2
-        )
+    def get_value_s(self):
+        return 1e-6 * self.value_us
 
-        # in this scheme, equal for all pulses, should incorporate some kind of "menu" for different sequence flavors:
-        for pulseIdx in torch.arange(1, params.sequence.etl):
-            time_pre_pulse[pulseIdx] = time_post_pulse[0]
-            time_post_pulse[pulseIdx] = time_post_pulse[0]
-        return cls(time_pre_pulse=time_pre_pulse, time_post_pulse=time_post_pulse)
+    def set_device(self, device):
+        self.value_us.to(device)
 
-    @classmethod
-    def build_fill_timing_se(cls, params: options.SimulationParameters = options.SimulationParameters()):
-        """
-        Create a timing scheme: save time in [us] in array[2] -> [0] before pulse, [1] after pulse.
-        For SE sequence
-        :return: timing array
-        """
-        # all in [us]
-        time_pre_pulse = torch.zeros(1)
-        time_post_pulse = torch.zeros(1)
-        # after excitation - before refocusing (check for prephaser):
-        time_pre_pulse[0] = 1000 * params.sequence.esp / 2 - (
-                params.sequence.duration_excitation / 2 + params.sequence.duration_excitation_rephase
-                + params.sequence.duration_refocus / 2
-        )
-        # refocusing pulse...
-        # after refocusing
-        time_post_pulse[0] = 1000 * params.sequence.esp / 2 - (
-                params.sequence.duration_refocus / 2 + params.sequence.duration_crush +
-                params.sequence.duration_acquisition / 2
-        )
-        return cls(time_pre_pulse=time_pre_pulse, time_post_pulse=time_post_pulse)
+class SequenceTimings:
+    def __init__(self):
+        self.timings: list = []
+        self.num_registered_times: int = len(self.timings)
+        self._name_register: dict = {}
 
-    def set_device(self, device: torch.device):
-        self.time_post_pulse = self.time_post_pulse.to(device)
-        self.time_pre_pulse = self.time_pre_pulse.to(device)
+    def register_timing(self, value_us: float, name: str):
+        self._name_register[name] = len(self._name_register)
+        self.timings.append(Timing(value_us=value_us))
+        self.num_registered_times = len(self.timings)
+
+    def get_timing_s(self, identifier: str | int):
+        if isinstance(identifier, str):
+            idx = self._name_register[identifier]
+        else:
+            idx = identifier
+        return self.timings[idx].get_value_s()
+
+    def set_device(self, device):
+        for timing in self.timings:
+            timing.set_device(device=device)
+
+   # @classmethod
+   #  def build_fill_timing_se(cls, params: options.SimulationParameters = options.SimulationParameters()):
+   #      """
+   #      Create a timing scheme: save time in [us] in array[2] -> [0] before pulse, [1] after pulse.
+   #      For SE sequence
+   #      :return: timing array
+   #      """
+   #      # all in [us]
+   #      time_pre_pulse = torch.zeros(1)
+   #      time_post_pulse = torch.zeros(1)
+   #      # after excitation - before refocusing (check for prephaser):
+   #      time_pre_pulse[0] = 1000 * params.sequence.esp / 2 - (
+   #              params.sequence.duration_excitation / 2 + params.sequence.duration_excitation_rephase
+   #              + params.sequence.duration_refocus / 2
+   #      )
+   #      # refocusing pulse...
+   #      # after refocusing
+   #      time_post_pulse[0] = 1000 * params.sequence.esp / 2 - (
+   #              params.sequence.duration_refocus / 2 + params.sequence.duration_crush +
+   #              params.sequence.duration_acquisition / 2
+   #      )
+   #      return cls(time_pre_pulse=time_pre_pulse, time_post_pulse=time_post_pulse)
+   #
+   #  def set_device(self, device: torch.device):
+   #      self.time_post_pulse = self.time_post_pulse.to(device)
+   #      self.time_pre_pulse = self.time_pre_pulse.to(device)

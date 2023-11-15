@@ -11,8 +11,8 @@ def main(sim_params: options.SimulationParameters):
 
     if sim_params.config.sim_type.startswith("mese"):
         sim_obj = simulations.MESE(sim_params=sim_params)
-    # elif sim_params.config.sim_type == "megesse":
-    #     sim_obj = simulations.MEGESSE(sim_params=sim_params, device=device)
+    elif sim_params.config.sim_type == "megesse":
+        sim_obj = simulations.MEGESSE(sim_params=sim_params)
     # elif sim_params.config.sim_type == "fid":
     #     sim_obj = simulations.FID(sim_params=sim_params, device=device)
     # if sim_params.config.sim_type == "single":

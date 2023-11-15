@@ -47,7 +47,9 @@ class Simulation(abc.ABC):
             self.set_magnetization_profile_snap(snap_name="initial")
 
         # setup acquisition
-        self.gp_se_acquisition = blocks.GradPulse.prep_acquisition(params=self.params)
+        self.gp_acquisition = blocks.GradPulse.prep_acquisition(params=self.params)
+        # give instance of sequence timings
+        self.sequence_timings: blocks.SequenceTimings = blocks.SequenceTimings()
         # sim info
         # set total number of simulated curves
         num_curves = self.data.t2_vals.shape[0] * self.data.b1_vals.shape[0] * self.data.t1_vals.shape[0]
@@ -55,6 +57,8 @@ class Simulation(abc.ABC):
         sim_params.settings.total_num_sim = num_curves
         # call specific prep
         self._prep()
+        # call timing build
+        self._register_sequence_timings()
 
     @abc.abstractmethod
     def _prep(self):
@@ -67,6 +71,10 @@ class Simulation(abc.ABC):
     @abc.abstractmethod
     def _set_device(self):
         """ sequence specific setting to put relevant tensors on device """
+
+    @abc.abstractmethod
+    def _register_sequence_timings(self):
+        """ sequence specific timing objects """
 
     def set_magnetization_profile_snap(self, snap_name: str):
         """ add magnetization profile snapshot to list for plotting """

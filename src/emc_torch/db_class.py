@@ -9,7 +9,7 @@ import pathlib as plib
 from plotly.express.colors import sample_colorscale
 import plotly.subplots as psub
 import plotly.graph_objects as go
-
+import tqdm
 log_module = logging.getLogger(__name__)
 
 
@@ -37,7 +37,7 @@ class DB:
         self.name: str = name.__str__()
 
         # normalize
-        self.normalize()
+        # self.normalize()
 
     def get_indexes(self):
         return self.indices
@@ -121,7 +121,7 @@ class DB:
                     colorscale=c_scales[b1_idx], showscale=True,
                     cmin=t2_range_ms[0], cmax=t2_range_ms[1],
                     colorbar=dict(
-                        title=f"B1: {df['b1'].unique()[b1_idx]}",
+                        title=f"{df['b1'].unique()[b1_idx]}",
                         x=1.02 + 0.05 * b1_idx
                     )
                 )
@@ -132,6 +132,10 @@ class DB:
         fig.add_annotation(
             xref="x domain", yref="y domain", x=1.005, y=-0.5, showarrow=False,
             text="T2 [ms]", row=1, col=1, textangle=-90, font=dict(size=14)
+        )
+        fig.add_annotation(
+            xref="x domain", yref="y domain", x=1.03, y=1.01, showarrow=False,
+            text="B1+", row=1, col=1, textangle=0, font=dict(size=14)
         )
 
         out_path = plib.Path(out_path).absolute()
@@ -172,17 +176,25 @@ class DB:
             db = pickle.load(p_file)
         return db
 
-    def normalize(self):
-        arr = self.np_mag_array
-        norm = np.linalg.norm(arr, axis=-1, keepdims=True)
-        self.np_mag_array = np.divide(arr, norm, where=norm > 1e-12, out=np.zeros_like(arr))
-
-        for k in range(len(self.pd_dataframe)):
-            self.pd_dataframe.at[k, "emc_mag"] = self.np_mag_array[k]
+    # def normalize(self):
+    #     arr = self.np_mag_array
+    #     norm = np.linalg.norm(arr, axis=-1, keepdims=True)
+    #     self.np_mag_array = np.divide(arr, norm, where=norm > 1e-12, out=np.zeros_like(arr))
+    #
+    #     for k in tqdm.trange(len(self.pd_dataframe), desc="normalizing db entries"):
+    #         self.pd_dataframe.at[k, "emc_mag"] = self.np_mag_array[k]
 
     def get_numpy_array(self) -> (np.ndarray, np.ndarray):
-        self.normalize()
+        # self.normalize()
         return self.np_mag_array, self.np_phase_array
+
+    def get_numpy_array_ids_t(self):
+        np_mag, np_phase = self.get_numpy_array()
+        np_mag = np.reshape(np_mag, (-1, len(self.pd_dataframe["echo"].unique())))
+        mag_norm = np.linalg.norm(np_mag, axis=-1, keepdims=True)
+        np_mag = np.divide(np_mag, mag_norm, where=np_mag > 1e-12, out=np.zeros_like(np_mag))
+        np_phase = np.reshape(np_phase, (-1, len(self.pd_dataframe["echo"].unique())))
+        return np_mag, np_phase
 
     def append_zeros(self):
         # want 0 lines for fitting noise

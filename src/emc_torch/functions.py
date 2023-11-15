@@ -11,10 +11,10 @@ def pulse_calibration_integral(sim_params: options.SimulationParameters,
     Calibrates pulse waveform for given flip angle, adds phase if given
     """
     # get b1 values - error catch again if single value is given
-    b1_vals = sim_params.settings.b1_list
-    if not isinstance(b1_vals, list):
-        b1_vals = [b1_vals]
-    b1_vals = torch.tensor(b1_vals)
+    b1_vals = options.SimulationData.build_array_from_list_of_lists_args(sim_params.settings.b1_list)
+    # if not isinstance(b1_vals, list):
+    #     b1_vals = [b1_vals]
+    # b1_vals = torch.tensor(b1_vals)
     if excitation:
         angle_flip = sim_params.sequence.excitation_angle
         phase = sim_params.sequence.excitation_phase / 180.0 * torch.pi
@@ -198,10 +198,10 @@ def sample_acquisition(etl_idx: int, sim_params: options.SimulationParameters, s
 
 
 def sum_sample_acquisition(etl_idx: int, sim_params: options.SimulationParameters, sim_data: options.SimulationData,
-                           acquisition_duration_s: torch.tensor):
-    # timing - relaxation half of acquisition til echo
-    dt_a_half = acquisition_duration_s / 2  # cast to s
-    mat_prop_relax = matrix_propagation_relaxation_multidim(dt_s=dt_a_half, sim_data=sim_data)
+                           acquisition_duration_s: torch.tensor, partial_fourier: float = 1.0):
+    # timing - partial fourier assumed to be taken at beginning of echo
+    dt_aq_pre = acquisition_duration_s * (partial_fourier - 1 / 2)  # cast to s
+    mat_prop_relax = matrix_propagation_relaxation_multidim(dt_s=dt_aq_pre, sim_data=sim_data)
     sim_data = propagate_matrix_mag_vector(mat_prop_relax, sim_data=sim_data)
     # sum contributions
     # remember dims [t1s, t2s, b1s, sample, 4]
@@ -214,7 +214,8 @@ def sum_sample_acquisition(etl_idx: int, sim_params: options.SimulationParameter
     sim_data.emc_signal_phase[:, :, :, etl_idx] = torch.angle(mag_data_cmplx)
 
     # relaxation rest of acquisition time, from mid echo til end
-    mat_prop_relax = matrix_propagation_relaxation_multidim(dt_s=dt_a_half, sim_data=sim_data)
+    dt_aq_post = acquisition_duration_s / 2
+    mat_prop_relax = matrix_propagation_relaxation_multidim(dt_s=dt_aq_post, sim_data=sim_data)
     sim_data = propagate_matrix_mag_vector(mat_prop_relax, sim_data=sim_data)
     return sim_data
 

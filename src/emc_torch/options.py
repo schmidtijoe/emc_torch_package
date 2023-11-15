@@ -274,27 +274,11 @@ class SimulationData:
         else:
             t1_vals = torch.tensor([sim_params.settings.t1_list], dtype=torch.float32, device=device)
         # b1
-        if isinstance(sim_params.settings.b1_list, list):
-            b1_vals = torch.tensor(sim_params.settings.b1_list, device=device)
-        else:
-            b1_vals = torch.tensor([sim_params.settings.b1_list], dtype=torch.float32, device=device)
+        b1_vals = cls.build_array_from_list_of_lists_args(sim_params.settings.b1_list).to(device)
         # t2
-        array = []
-        if isinstance(sim_params.settings.t2_list, list):
-            for item in sim_params.settings.t2_list:
-                if isinstance(item, str):
-                    item = [float(i) for i in item[1:-1].split(',')]
-                if isinstance(item, int):
-                    item = float(item)
-                if isinstance(item, float):
-                    array.append(item)
-                else:
-                    array.extend(torch.arange(*item).tolist())
-        else:
-            array = [sim_params.settings.t2_list]
-        array = torch.tensor(array, dtype=torch.float32)
-        array /= 1000.0  # cast to s
-        t2_vals = array.to(device)
+        array_t2 = cls.build_array_from_list_of_lists_args(sim_params.settings.t2_list)
+        array_t2 /= 1000.0  # cast to s
+        t2_vals = array_t2.to(device)
 
         sample_axis = torch.linspace(-sim_params.settings.length_z, sim_params.settings.length_z,
                                      sim_params.settings.sample_number)
@@ -334,6 +318,23 @@ class SimulationData:
         )
         instance._check_args()
         return instance
+
+    @staticmethod
+    def build_array_from_list_of_lists_args(val_list) -> torch.tensor:
+        array = []
+        if isinstance(val_list, list):
+            for item in val_list:
+                if isinstance(item, str):
+                    item = [float(i) for i in item[1:-1].split(',')]
+                if isinstance(item, int):
+                    item = float(item)
+                if isinstance(item, float):
+                    array.append(item)
+                else:
+                    array.extend(torch.arange(*item).tolist())
+        else:
+            array = [val_list]
+        return torch.tensor(array, dtype=torch.float32)
 
     def _check_args(self):
         # sanity checks

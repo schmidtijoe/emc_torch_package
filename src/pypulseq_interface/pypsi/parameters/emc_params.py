@@ -55,6 +55,8 @@ class EmcParameters(sp.helpers.Serializable):
     duration_excitation_verse_lobes: float = 0.0
     gradient_refocus_verse_lobes: float = 0.0
     duration_refocus_verse_lobes: float = 0.0
+    # echo times
+    tes: list = sp.field(default_factory=lambda: [0.0])
 
     def __post_init__(self):
         self.gamma_pi: float = self.gamma_hz * 2 * np.pi

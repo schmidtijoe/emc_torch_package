@@ -26,23 +26,40 @@ class MESE(Simulation):
             gp_refocus = blocks.GradPulse.prep_grad_pulse_refocus(params=self.params, refocus_pulse_number=r_idx)
             self.gps_refocus.append(gp_refocus)
 
-        log_module.info(f"\t - calculate sequence timing")
-        self.timing = blocks.Timing.build_fill_timing_mese(self.params)
-
         if self.params.config.visualize:
             log_module.info("\t - plot grad pulse data")
             self.gp_excitation.plot(sim_data=self.data, fig_path=self.fig_path)
             self.gps_refocus[0].plot(sim_data=self.data, fig_path=self.fig_path)
             self.gps_refocus[1].plot(sim_data=self.data, fig_path=self.fig_path)
-            self.gp_se_acquisition.plot(sim_data=self.data, fig_path=self.fig_path)
+            self.gp_acquisition.plot(sim_data=self.data, fig_path=self.fig_path)
 
     def _set_device(self):
         # set devices
         self.gp_excitation.set_device(self.device)
-        self.timing.set_device(self.device)
+        self.sequence_timings.set_device(self.device)
         for gp in self.gps_refocus:
             gp.set_device(self.device)
-        self.gp_se_acquisition.set_device(self.device)
+        self.gp_acquisition.set_device(self.device)
+
+    def _register_sequence_timings(self):
+        log_module.info(f"\t - calculate sequence timing")
+        # all in [us]
+        # before first refocusing
+        time_pre_pulse = 1000 * self.params.sequence.esp / 2 - (
+                self.params.sequence.duration_excitation / 2 + self.params.sequence.duration_excitation_verse_lobes +
+                self.params.sequence.duration_excitation_rephase +
+                self.params.sequence.duration_refocus / 2 + self.params.sequence.duration_refocus_verse_lobes
+        )
+        self.sequence_timings.register_timing(name="pre_refocus_1", value_us=time_pre_pulse)
+
+        # after first refocusing
+        time_post_pulse = 1000 * self.params.sequence.esp / 2 - (
+                self.params.sequence.duration_refocus / 2 + self.params.sequence.duration_refocus_verse_lobes +
+                self.params.sequence.duration_crush + self.params.sequence.duration_acquisition / 2
+        )
+        self.sequence_timings.register_timing(name="post_refocus_1", value_us=time_post_pulse)
+
+        self.sequence_timings.register_timing(name="pre_post_refocus", value_us=time_post_pulse)
 
     def _simulate(self):
         """ want to set up gradients and pulses like in the mese standard protocol
@@ -63,20 +80,17 @@ class MESE(Simulation):
             # save excitation profile snapshot
             self.set_magnetization_profile_snap(snap_name="excitation")
 
-        # calculate timing matrices (there are only 4)
+        # calculate timing matrices (there are only 3)
         # first refocus
         mat_prop_ref1_pre_time = functions.matrix_propagation_relaxation_multidim(
-            dt_s=self.timing.time_pre_pulse[0] * 1e-6, sim_data=self.data
+            dt_s=self.sequence_timings.get_timing_s("pre_refocus_1"), sim_data=self.data
         )
         mat_prop_ref1_post_time = functions.matrix_propagation_relaxation_multidim(
-            dt_s=self.timing.time_post_pulse[0] * 1e-6, sim_data=self.data
+            dt_s=self.sequence_timings.get_timing_s(1), sim_data=self.data
         )
         # other refocus
-        mat_prop_ref_pre_time = functions.matrix_propagation_relaxation_multidim(
-            dt_s=self.timing.time_pre_pulse[1] * 1e-6, sim_data=self.data
-        )
-        mat_prop_ref_post_time = functions.matrix_propagation_relaxation_multidim(
-            dt_s=self.timing.time_post_pulse[1] * 1e-6, sim_data=self.data
+        mat_prop_ref_pre_post_time = functions.matrix_propagation_relaxation_multidim(
+            dt_s=self.sequence_timings.get_timing_s("pre_post_refocus"), sim_data=self.data
         )
         log_module.debug("loop through refocusing")
         with tqdm.trange(self.params.sequence.etl) as t:
@@ -86,7 +100,7 @@ class MESE(Simulation):
                 if loop_idx == 0:
                     m_p_pre = mat_prop_ref1_pre_time
                 else:
-                    m_p_pre = mat_prop_ref_pre_time
+                    m_p_pre = mat_prop_ref_pre_post_time
                 self.data = functions.propagate_matrix_mag_vector(m_p_pre, sim_data=self.data)
                 # pulse
                 self.data = functions.propagate_gradient_pulse_relax(
@@ -100,7 +114,7 @@ class MESE(Simulation):
                 if loop_idx == 0:
                     m_p_post = mat_prop_ref1_post_time
                 else:
-                    m_p_post = mat_prop_ref_post_time
+                    m_p_post = mat_prop_ref_pre_post_time
                 self.data = functions.propagate_matrix_mag_vector(m_p_post, sim_data=self.data)
 
                 if self.params.config.visualize:
@@ -112,8 +126,8 @@ class MESE(Simulation):
                     # sample the acquisition with the readout gradient moved to into the slice direction
                     self.data = functions.sample_acquisition(
                         etl_idx=loop_idx, sim_params=self.params, sim_data=self.data,
-                        acquisition_grad=self.gp_se_acquisition.data_grad,
-                        dt_s=self.gp_se_acquisition.dt_sampling_steps_us * 1e-6
+                        acquisition_grad=self.gp_acquisition.data_grad,
+                        dt_s=self.gp_acquisition.dt_sampling_steps_us * 1e-6
                     )
                     # basically this gives us a signal evolution in k-space binned into spatial resolution bins
                 else:
