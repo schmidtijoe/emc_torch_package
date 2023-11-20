@@ -17,12 +17,18 @@ class FitConfig(sp.Serializable):
     nii_path: str = sp.field(alias="-i", default="")
     # set path to save database and used config
     save_path: str = sp.field(alias="-s", default="")
+    # set name of file
+    save_name: str = sp.field(alias="-o", default="")
     # set filename of database
     database_file: str = sp.field(alias="-db", default="")
     # set filename of b1 map (optional)
     b1_file: str = sp.field(alias="-b1", default="")
+    # set weighting of b1 (optional), sets the weight of the b1 penalty for the db entries to match input b1
+    b1_weight: float = sp.field(alias="-b1w", default=0.2)
 
     # flags
+    # visualization
+    visualize: bool = sp.field(alias="-v", default=True)
     # debug
     debug: bool = sp.field(alias="-d", default=False)
 

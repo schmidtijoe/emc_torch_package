@@ -9,7 +9,6 @@ import pathlib as plib
 from plotly.express.colors import sample_colorscale
 import plotly.subplots as psub
 import plotly.graph_objects as go
-import tqdm
 log_module = logging.getLogger(__name__)
 
 
@@ -30,7 +29,7 @@ class DB:
         self.seq_params: EmcParameters = sequence_config
         self.np_mag_array: np.ndarray = np.array([*pd_dataframe.emc_mag.to_numpy()])
         self.np_phase_array: np.ndarray = np.array([*pd_dataframe.emc_phase.to_numpy()])
-        self.etl: int = self.np_mag_array.shape[-1]
+        self.etl: int = len(self.pd_dataframe["echo"].unique())
         # extract only name in case filename given
         name = plib.Path(name).absolute()
         name = name.stem
@@ -190,10 +189,10 @@ class DB:
 
     def get_numpy_array_ids_t(self):
         np_mag, np_phase = self.get_numpy_array()
-        np_mag = np.reshape(np_mag, (-1, len(self.pd_dataframe["echo"].unique())))
+        np_mag = np.reshape(np_mag, (-1, self.etl))
         mag_norm = np.linalg.norm(np_mag, axis=-1, keepdims=True)
         np_mag = np.divide(np_mag, mag_norm, where=np_mag > 1e-12, out=np.zeros_like(np_mag))
-        np_phase = np.reshape(np_phase, (-1, len(self.pd_dataframe["echo"].unique())))
+        np_phase = np.reshape(np_phase, (-1, self.etl))
         return np_mag, np_phase
 
     def append_zeros(self):
