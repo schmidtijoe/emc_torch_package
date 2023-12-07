@@ -193,7 +193,7 @@ class DB:
         mag_norm = np.linalg.norm(np_mag, axis=-1, keepdims=True)
         np_mag = np.divide(np_mag, mag_norm, where=np_mag > 1e-12, out=np.zeros_like(np_mag))
         np_phase = np.reshape(np_phase, (-1, self.etl))
-        return np_mag, np_phase
+        return np_mag, np_phase, np.squeeze(mag_norm)
 
     def append_zeros(self):
         # want 0 lines for fitting noise
