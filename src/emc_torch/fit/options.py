@@ -9,7 +9,7 @@ log_module = logging.getLogger(__name__)
 @dc.dataclass
 class FitConfig(sp.Serializable):
     """
-        Configuration for simulation
+        Configuration for Fitting
         """
     # provide Configuration file (.json)
     config_file: str = sp.field(alias="-c", default="")
@@ -18,13 +18,13 @@ class FitConfig(sp.Serializable):
     # set path to save database and used config
     save_path: str = sp.field(alias="-s", default="")
     # set name of file
-    save_name: str = sp.field(alias="-o", default="")
+    save_name_prefix: str = sp.field(alias="-o", default="")
     # set filename of database
     database_file: str = sp.field(alias="-db", default="")
     # set filename of b1 map (optional)
     b1_file: str = sp.field(alias="-b1", default="")
     # set weighting of b1 (optional), sets the weight of the b1 penalty for the db entries to match input b1
-    b1_weight: float = sp.field(alias="-b1w", default=0.2)
+    b1_weight: float = sp.field(alias="-b1w", default=0.5)
 
     # flags
     # visualization
