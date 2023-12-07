@@ -49,6 +49,7 @@ class SimulationConfig(sp.Serializable):
 
     # init gpu
     use_gpu: bool = sp.field(alias="-gpu", default=False)
+    gpu_device: int = sp.field(alias="-gpud", default=0, help="(optional) set gpu device if multiple are available")
 
     # toggle multithreading
     # multiprocessing: bool = False

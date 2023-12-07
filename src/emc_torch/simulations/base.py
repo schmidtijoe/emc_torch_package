@@ -14,7 +14,7 @@ class Simulation(abc.ABC):
         log_module.info("__ Set-up Simulation __ ")
         # setup device
         if sim_params.config.use_gpu and torch.cuda.is_available():
-            device = torch.device("cuda:0")
+            device = torch.device(f"cuda:{sim_params.config.gpu_device}")
         else:
             device = torch.device("cpu")
         self.device: torch.device = device
