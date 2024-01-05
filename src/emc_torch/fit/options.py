@@ -13,7 +13,7 @@ class FitConfig(sp.Serializable):
         """
     # provide Configuration file (.json)
     config_file: str = sp.field(alias="-c", default="")
-    # set filepath to interface
+    # set filepath to nii file
     nii_path: str = sp.field(alias="-i", default="")
     # set path to save database and used config
     save_path: str = sp.field(alias="-s", default="")

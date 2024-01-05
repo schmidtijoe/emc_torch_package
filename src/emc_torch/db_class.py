@@ -46,11 +46,12 @@ class DB:
 
     def plot(self,
              out_path: plib.Path | str, name: str = "",
-             t1_range_s: tuple = None, t2_range_ms: tuple = (20, 50), b1_range: tuple = (0.5, 1.2)):
+             t1_range_s: tuple = None, t2_range_ms: tuple = (20, 50), b1_range: tuple = (0.5, 1.2),
+             format: str = "html"):
         if name:
             name = f"_{name}"
         # select range
-        df = self.pd_dataframe
+        df = self.pd_dataframe.copy()
         df["t2"] = 1e3 * df["t2"]
         df["t2"] = df["t2"].round(2)
         df["b1"] = df["b1"].round(2)
@@ -64,8 +65,7 @@ class DB:
         # for now we only take one t1 value
         df = df[df["t1"] == df["t1"].unique()[0]].drop(columns=["t1"]).drop(columns="index").reset_index(drop=True)
         # setup colorscales to use
-        x = np.linspace(0.2, 1, len(df["t2"].unique()))
-        c_scales = ["Purples", "Oranges", "Greens", "Reds", "Blues"]
+        c_scales = ["Purples", "Oranges", "Greens", "Blues"]
         echo_ax = df["echo"].to_numpy()
         # setup subplots
         while len(df["b1"].unique()) > len(c_scales):
@@ -75,7 +75,7 @@ class DB:
             b1_vals.pop(drop_idx)
             df = df[df["b1"].isin(b1_vals)]
         # setup subplots
-        while len(df["t2"].unique()) > 20:
+        while len(df["t2"].unique()) > 12:
             # drop every second t2 value
             t2_vals = df["t2"].unique().tolist()[::2]
             df = df[df["t2"].isin(t2_vals)]
@@ -84,6 +84,7 @@ class DB:
         fig = psub.make_subplots(
             2, 1, shared_xaxes=True, subplot_titles=titles
         )
+        x = np.linspace(0.2, 1, len(df["t2"].unique()))
         # edit axis labels
         fig['layout']['xaxis2']['title'] = 'Echo Number'
         fig['layout']['yaxis']['title'] = 'Signal [a.u.]'
@@ -99,7 +100,7 @@ class DB:
                 mag = temp_df[temp_df["t2"] == t2]["emc_mag"].to_numpy()
                 mag /= np.abs(np.max(mag))
                 fig.add_trace(
-                    go.Scatter(
+                    go.Scattergl(
                         x=echo_ax, y=mag, marker_color=c, showlegend=False
                     ),
                     1, 1
@@ -107,13 +108,17 @@ class DB:
 
                 phase = temp_df[temp_df["t2"] == t2]["emc_phase"].to_numpy()
                 fig.add_trace(
-                    go.Scatter(
+                    go.Scattergl(
                         x=echo_ax, y=phase, marker_color=c, showlegend=False
                     ),
                     2, 1
                 )
+            if b1_idx == num_plot_b1s-1:
+                showticks = True
+            else:
+                showticks = False
             # add colorbar
-            colorbar_trace = go.Scatter(
+            colorbar_trace = go.Scattergl(
                 x=[None], y=[None], mode='markers',
                 showlegend=False,
                 marker=dict(
@@ -121,8 +126,9 @@ class DB:
                     cmin=t2_range_ms[0], cmax=t2_range_ms[1],
                     colorbar=dict(
                         title=f"{df['b1'].unique()[b1_idx]}",
-                        x=1.02 + 0.05 * b1_idx
-                    )
+                        x=1.02 + 0.05 * b1_idx,
+                        showticklabels=showticks
+                    ),
                 )
             )
             fig.add_trace(colorbar_trace, 1, 1)
@@ -138,9 +144,18 @@ class DB:
         )
 
         out_path = plib.Path(out_path).absolute()
-        fig_file = out_path.joinpath(f"emc_db{name}").with_suffix(".html")
-        log_module.info(f"writing file: {fig_file.as_posix()}")
-        fig.write_html(fig_file.as_posix())
+        if format == "html":
+            fig_file = out_path.joinpath(f"emc_db{name}").with_suffix(".html")
+            log_module.info(f"writing file: {fig_file.as_posix()}")
+            fig.write_html(fig_file.as_posix())
+        elif format in ["pdf", "svg", "png"]:
+            fig_file = out_path.joinpath(f"emc_db{name}").with_suffix(f".{format}")
+            log_module.info(f"writing file: {fig_file.as_posix()}")
+            fig.write_image(fig_file.as_posix(), width=1200, height=800)
+        else:
+            err = f"Format {format} not recognized"
+            log_module.error(err)
+            raise AttributeError(err)
 
     def save(self, path: typing.Union[str, plib.Path]):
         path = plib.Path(path).absolute()

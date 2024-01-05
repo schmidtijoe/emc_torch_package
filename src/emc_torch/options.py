@@ -22,7 +22,7 @@ class SimulationConfig(sp.Serializable):
     # provide Configuration file (.json)
     config_file: str = sp.field(alias="-c", default="")
     # set filepath to interface
-    pypsi_path: str = sp.field(alias="-p", default="./tests/pypsi_mese_test.pkl")
+    pypsi_path: str = sp.field(alias="-p", default="")
     # provide separate sequence params (optional if no pypsi interface available)
     emc_seq_file: str = sp.field(alias="-oemc", default="")
     # provide separate pulse class (optional if no pypsi interface available)
@@ -120,8 +120,16 @@ class SimulationParameters(sp.Serializable):
         # upon setting or resetting sequence info we need to adjust the acquisition gradient
         self.set_acquisition_gradient()
 
-    def _set_pulse(self, pulse: pypsi.parameters.RFParameters = pypsi.parameters.RFParameters()):
-        self.pulse = pulse
+    def _set_pulse(
+            self,
+            pulse: typing.Union[
+                pypsi.parameters.RFParameters, pypsi.parameters.rf_params.RFPulse
+            ] = pypsi.parameters.RFParameters()):
+        if isinstance(pulse, pypsi.parameters.rf_params.RFPulse):
+            self.pulse.excitation = pulse
+            self.pulse.refocusing = pulse
+        else:
+            self.pulse = pulse
 
     def set_acquisition_gradient(self):
         log_module.debug(
@@ -199,7 +207,7 @@ class SimulationParameters(sp.Serializable):
             file = sim_params.config.pulse_file
             if "emc_seq_file" in non_default_config.keys():
                 file = args.config.pulse_file
-            sim_params._set_pulse(pulse=pypsi.parameters.RFParameters.load(file))
+            sim_params._set_pulse(pulse=pypsi.parameters.rf_params.RFPulse.load(file))
         else:
             err_w_file.append("pulse file")
 
