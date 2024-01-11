@@ -25,6 +25,9 @@ class FitConfig(sp.Serializable):
     b1_file: str = sp.field(alias="-b1", default="")
     # set weighting of b1 (optional), sets the weight of the b1 penalty for the db entries to match input b1
     b1_weight: float = sp.field(alias="-b1w", default=0.5)
+    # set transmit field offset if used in scan (optional). adjustment of the transmit voltage in semc
+    # would scale the B1 map acquired with other modalities
+    b1_tx_scale: float = sp.field(alias="-b1tx", default=1.0)
 
     # flags
     # visualization

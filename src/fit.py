@@ -58,6 +58,7 @@ def main(fit_config: options.FitConfig):
         b1_nii = torch.reshape(b1_nii, (num_flat_dim,)).to(device)
         if torch.max(b1_nii) > 10:
             b1_nii = b1_nii / 100
+        b1_nii *= fit_config.b1_tx_scale
         b1_nii = torch.split(b1_nii, batch_size, dim=0)
         use_b1 = True
         b1_weight = fit_config.b1_weight
@@ -80,7 +81,7 @@ def main(fit_config: options.FitConfig):
 
         # b1 penalty
         if use_b1:
-            b1_batch = b1_nii[idx]
+            b1_batch = b1_scale * b1_nii[idx]
             b1_penalty = torch.sqrt(torch.square(b1_vals[:, None] - b1_batch[None, :]))
         else:
             b1_penalty = 0.0
