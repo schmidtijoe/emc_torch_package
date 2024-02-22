@@ -1,5 +1,6 @@
 from . import plotting, options
 from .db_class import DB
+from .fitting.fit_fn import fit
 
 __all__ = ["plotting", "options", "DB"]
 

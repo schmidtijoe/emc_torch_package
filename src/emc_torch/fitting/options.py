@@ -28,6 +28,10 @@ class FitConfig(sp.Serializable):
     # set transmit field offset if used in scan (optional). adjustment of the transmit voltage in semc
     # would scale the B1 map acquired with other modalities
     b1_tx_scale: float = sp.field(alias="-b1tx", default=1.0)
+    # use gpu
+    use_gpu: bool = sp.field(alias="-gpu", default=True)
+    # gpu device
+    gpu_device: int = sp.field(alias="-gpud", default=0)
 
     # flags
     # visualization

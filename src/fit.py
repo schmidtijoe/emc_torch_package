@@ -2,7 +2,7 @@ import pathlib as plib
 import nibabel as nib
 import torch
 import tqdm
-from emc_torch.fit import options, io
+from emc_torch.fitting import options, io
 import logging
 
 log_module = logging.getLogger(__name__)
@@ -34,10 +34,11 @@ def main(fit_config: options.FitConfig):
     device = torch.device("cuda:0")
 
     # make 2d [xyz, t]
-    nii_scale = torch.linalg.norm(data_nii, dim=-1, keepdim=True)
+    # get scaling of signal as one factor to compute pd
+    rho_s = torch.linalg.norm(data_nii, dim=-1, keepdim=True)
     # l2 normalize data - db is normalized
     data_nii = torch.nan_to_num(
-        torch.divide(data_nii, nii_scale),
+        torch.divide(data_nii, rho_s),
         nan=0.0, posinf=0.0
     )
     nii_data = torch.reshape(data_nii, (-1, data_nii_input_shape[-1])).to(device)
@@ -55,21 +56,26 @@ def main(fit_config: options.FitConfig):
     # b1 penalty of b1 database vs b1 input
     # dim b1 [xyz], db b1 - values for each entry [t1 t2 b1]
     if b1_nii is not None:
+        b1_scale = fit_config.b1_tx_scale
         b1_nii = torch.reshape(b1_nii, (num_flat_dim,)).to(device)
         if torch.max(b1_nii) > 10:
             b1_nii = b1_nii / 100
-        b1_nii *= fit_config.b1_tx_scale
+        b1_nii *= b1_scale
         b1_nii = torch.split(b1_nii, batch_size, dim=0)
         use_b1 = True
         b1_weight = fit_config.b1_weight
-        name = f"{name}_b1-in_w-{b1_weight}".replace(".", "p")
+        name = f"{name}_b1-in-w-{b1_weight}".replace(".", "p")
+        if abs(1.0 - b1_scale) > 1e-3:
+            name = f"{name}_tx-scale-{b1_scale:.2f}"
     else:
         use_b1 = False
         b1_weight = 0.0
+        b1_scale = 1.0
 
     t2 = torch.zeros(num_flat_dim, dtype=t2_vals.dtype, device=device)
     b1 = torch.zeros(num_flat_dim, dtype=b1_vals.dtype, device=device)
-    s0 = torch.zeros(num_flat_dim, dtype=nii_scale.dtype, device=device)
+    # get scaling of db curves as one factor to compute pd
+    rho_theta = torch.zeros(num_flat_dim, dtype=rho_s.dtype, device=device)
 
     # need to bin data for memory reasons
     for idx in tqdm.trange(len(nii_data), desc="batch processing"):
@@ -93,11 +99,12 @@ def main(fit_config: options.FitConfig):
         # populate maps
         t2[nii_idxs[idx]] = t2_vals[min_idx]
         b1[nii_idxs[idx]] = b1_vals[min_idx]
-        s0[nii_idxs[idx]] = db_torch_norm[min_idx]
+        rho_theta[nii_idxs[idx]] = db_torch_norm[min_idx]
     # set t2 0 for signal 0 (eg. for bet) We could in principle use this to reduce computation demands
     # by not needing to compute those entries,
     # however we want to estimate the b1
     t2[nii_zero] = 0.0
+
     # reshape
     if torch.max(t2) < 5:
         # cast to ms
@@ -107,33 +114,27 @@ def main(fit_config: options.FitConfig):
     t2 = t2.numpy(force=True)
     r2 = r2.numpy(force=True)
     b1 = torch.reshape(b1, data_nii_input_shape[:-1]).numpy(force=True)
-    s0[nii_zero] = 0.0
-    s0 = torch.reshape(s0, data_nii_input_shape[:-1]).cpu()
-    pd_like = torch.nan_to_num(
+    rho_theta[nii_zero] = 0.0
+    rho_theta = torch.reshape(rho_theta, data_nii_input_shape[:-1]).cpu()
+
+    pd = torch.nan_to_num(
         torch.divide(
-            torch.squeeze(nii_scale),
-            torch.squeeze(s0)
+            torch.squeeze(rho_s),
+            torch.squeeze(rho_theta)
         ),
         nan=0.0, posinf=0.0
     )
-    double_weighting = torch.squeeze(nii_scale) * torch.squeeze(s0)
     # we want to calculate histograms for both, and find upper cutoffs of the data values based on the histograms
     # since both might explode
-    dw_hist, dw_bins = torch.histogram(double_weighting.flatten(), bins=200)
-    pd_hist, pd_bins = torch.histogram(pd_like.flatten(), bins=200)
-    # find percentage where 99.5 % of data lie
-    dw_hist_perc = torch.cumsum(dw_hist, dim=0) / torch.sum(dw_hist, dim=0)
+    pd_hist, pd_bins = torch.histogram(pd.flatten(), bins=200)
+    # find percentage where 95 % of data lie
     pd_hist_perc = torch.cumsum(pd_hist, dim=0) / torch.sum(pd_hist, dim=0)
-
-    dw_cutoff_value = dw_bins[torch.nonzero(dw_hist_perc > 0.995)[0].item()]
-    pd_cutoff_value = pd_bins[torch.nonzero(pd_hist_perc > 0.995)[0].item()]
-
-    double_weighting = torch.clamp(double_weighting, min=0.0, max=dw_cutoff_value).numpy(force=True)
-    pd_like = torch.clamp(pd_like, min=0.0, max=pd_cutoff_value).numpy(force=True)
+    pd_cutoff_value = pd_bins[torch.nonzero(pd_hist_perc > 0.95)[0].item()]
+    pd = torch.clamp(pd, min=0.0, max=pd_cutoff_value).numpy(force=True)
 
     # save
-    names = [f"t2", f"r2", f"b1", f"pd_like_scaling", "d_norm_w"]
-    data = [t2, r2, b1, pd_like, double_weighting]
+    names = [f"t2", f"r2", f"b1", f"pd_like"]
+    data = [t2, r2, b1, pd]
     for idx in range(len(data)):
         save_name = f"{name}_{names[idx]}"
         img = nib.Nifti1Image(data[idx], affine=data_affine)
