@@ -147,6 +147,21 @@ class SimulationParameters(sp.Serializable):
         self.sequence.gradient_acquisition = - grad_amp * 1e3  # cast to mT
 
     @classmethod
+    def load_defaults(cls):
+        sim_params = cls()
+        sim_params._set_defaults()
+        return sim_params
+
+    def set_pypsi_interface(self, pyp: typing.Union[pypsi.Params, str, plib.Path]):
+        if not isinstance(pyp, pypsi.Params):
+            log_module.debug(f"load pypsi interface file {pyp}")
+            interface = pypsi.Params.load(pyp)
+        else:
+            interface = pyp
+        self._set_sequence(sequence=interface.emc)
+        self._set_pulse(pulse=interface.pulse)
+
+    @classmethod
     def from_cli(cls, args: sp.ArgumentParser.parse_args):
         sim_params = SimulationParameters(config=args.config, settings=args.settings)
         # here we find explicit cmd line args (if not defaults)
