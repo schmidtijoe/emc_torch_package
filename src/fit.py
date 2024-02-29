@@ -136,17 +136,15 @@ def main(fit_config: options.FitConfig):
     names = [f"t2", f"r2", f"b1", f"pd_like"]
     data = [t2, r2, b1, pd]
     for idx in range(len(data)):
-        save_name = f"{name}_{names[idx]}"
-        img = nib.Nifti1Image(data[idx], affine=data_affine)
-        file_name = path.joinpath(save_name).with_suffix(".nii")
-        logging.info(f"write file: {file_name.as_posix()}")
-        nib.save(img, file_name.as_posix())
+        save_nii_data(data=data[idx], affine=data_affine, name_prefix=name, name=names[idx])
 
 
-def l2_diff_einsum(tensor_a: torch.tensor, tensor_b: torch.tensor):
-    # dims a [n,t], b[m, t]
-    diff = tensor_a[:, None] - tensor_b[None, :]
-    return torch.sqrt(torch.einsum("nmt, nmt -> nm", diff, diff))
+def save_nii_data(data, name: str, path: plib.Path, name_prefix: str, affine):
+    save_name = f"{name_prefix}_{name}"
+    img = nib.Nifti1Image(data, affine=affine)
+    file_name = path.joinpath(save_name).with_suffix(".nii")
+    logging.info(f"write file: {file_name.as_posix()}")
+    nib.save(img, file_name.as_posix())
 
 
 if __name__ == '__main__':

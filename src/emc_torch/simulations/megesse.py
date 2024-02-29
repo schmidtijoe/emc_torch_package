@@ -104,9 +104,9 @@ class MEGESSE(Simulation):
             log_module.error(err)
             raise AttributeError(err)
 
-        log_module.debug(f"Simulating MEGESSE sequence")
+        log_module.info(f"Simulating MEGESSE sequence")
         # --- starting sim matrix propagation --- #
-        log_module.debug("calculate matrix propagation")
+        log_module.info("calculate matrix propagation")
         # excitation
         self.data = functions.propagate_gradient_pulse_relax(
             pulse_x=self.gp_excitation.data_pulse_x, pulse_y=self.gp_excitation.data_pulse_y,
