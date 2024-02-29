@@ -323,6 +323,7 @@ class Timing:
     def set_device(self, device):
         self.value_us.to(device)
 
+
 class SequenceTimings:
     def __init__(self):
         self.timings: list = []

@@ -2,6 +2,8 @@ import pathlib as plib
 import nibabel as nib
 import torch
 import tqdm
+import json
+from emc_torch import DB
 from emc_torch.fitting import options, io
 import logging
 
@@ -9,46 +11,73 @@ log_module = logging.getLogger(__name__)
 logging.getLogger('simple_parsing').setLevel(logging.WARNING)
 
 
-def main(fit_config: options.FitConfig):
-    # set path
-    path = plib.Path(fit_config.save_path).absolute()
-    log_module.info(f"setup save path: {path.as_posix()}")
-    path.mkdir(parents=True, exist_ok=True)
+def megesse_fit(
+        fit_config: options.FitConfig, data_nii: torch.tensor, db_torch_mag: torch.tensor,
+        db: DB, name:str, b1_nii=None):
+    ep_path = plib.Path(fit_config.echo_props_path).absolute()
+    if not ep_path.is_file():
+        err = f"echo properties file: {ep_path} not found or not a file."
+        log_module.error(err)
+        raise FileNotFoundError(err)
+    log_module.info(f"loading echo property file: {ep_path}")
+    with open(ep_path.as_posix(), "r") as j_file:
+        echo_props = json.load(j_file)
+    fit_se = False
+    if echo_props.__len__() < db_torch_mag.shape[-1]:
+        warn = "echo type list not filled or shorter than database etl. filling with SE type acquisitions"
+        log_module.warning(warn)
+    while echo_props.__len__() < db_torch_mag.shape[-1]:
+        # if the list is too short or insufficiently filled we assume SE acquisitions
+        echo_props[echo_props.__len__()] = {"type": "SE", "te_ms": 0.0, "time_to_adj_se_ms": 0.0}
+    # possibly need some kind of convenient class to coherently store information
+    # get number of SE and GRE
+    idx_se = []
+    idx_gre = []
+    for idx_e in range(echo_props.__len__()):
+        if echo_props[str(idx_e)]["type"] == "SE":
+            idx_se.append(idx_e)
+        elif echo_props[str(idx_e)]["type"] == "GRE":
+            idx_gre.append(idx_e)
+        else:
+            err = "unknown echo type in separating SE and GRE data"
+            log_module.error(err)
+            raise AttributeError(err)
+    num_se = len(idx_se)
+    num_gre = len(idx_gre)
 
-    # load in data
-    if fit_config.save_name_prefix:
-        fit_config.save_name_prefix += f"_"
-    in_path = plib.Path(fit_config.nii_path).absolute()
-    stem = in_path.stem
-    for suffix in in_path.suffixes:
-        stem = stem.removesuffix(suffix)
-    name = f"{fit_config.save_name_prefix}{stem}"
+    t2, t2p, r2, b1, pd = (None, None, None, None, None)
+    return t2, t2p, r2, b1, pd
 
-    log_module.info("__ Load data")
-    data_nii, db, b1_nii, data_affine, b1_affine = io.load_data(fit_config=fit_config)
-    data_nii_input_shape = data_nii.shape
 
-    # for now take only magnitude data
-    db_mag, db_phase, db_norm = db.get_numpy_array_ids_t()
-    # device
-    device = torch.device("cuda:0")
-
-    # make 2d [xyz, t]
+def mese_fit(
+        fit_config: options.FitConfig, data_nii: torch.tensor, name:str,
+        db_torch_mag: torch.tensor, db: DB, device: torch.device, b1_nii=None):
     # get scaling of signal as one factor to compute pd
     rho_s = torch.linalg.norm(data_nii, dim=-1, keepdim=True)
+    # for a first approximation we fit only the spin echoes
+    # make 2d [xyz, t]
+    data_nii_input_shape = data_nii.shape
+    data_nii = torch.reshape(data_nii, (-1, data_nii.shape[-1]))
     # l2 normalize data - db is normalized
     data_nii = torch.nan_to_num(
-        torch.divide(data_nii, rho_s),
+        torch.divide(data_nii, torch.linalg.norm(data_nii, dim=-1, keepdim=True)),
         nan=0.0, posinf=0.0
+    ).to(device)
+    # nii_data = torch.reshape(data_nii_se, (-1, data_nii_input_shape[-1])).to(device)
+    num_flat_dim = data_nii.shape[0]
+    db_torch_mag = db_torch_mag.to(device)
+    # get emc simulation norm
+    # db_torch_norm = torch.squeeze(torch.from_numpy(db_norm)).to(device)
+    db_torch_norm = torch.linalg.norm(db_torch_mag, dim=-1, keepdim=True)
+    db_torch_mag = torch.nan_to_num(
+        torch.divide(db_torch_mag, db_torch_norm), posinf=0.0, nan=0.0
     )
-    nii_data = torch.reshape(data_nii, (-1, data_nii_input_shape[-1])).to(device)
-    num_flat_dim = nii_data.shape[0]
-    db_torch_mag = torch.from_numpy(db_mag).to(device)
-    db_torch_norm = torch.squeeze(torch.from_numpy(db_norm).to(device))
+    db_torch_norm = torch.squeeze(db_torch_norm)
+
     batch_size = 3000
-    nii_idxs = torch.split(torch.arange(nii_data.shape[0]), batch_size)
-    nii_zero = torch.sum(torch.abs(nii_data), dim=-1) < 1e-6
-    nii_data = torch.split(nii_data, batch_size, dim=0)
+    nii_idxs = torch.split(torch.arange(num_flat_dim), batch_size)
+    nii_zero = torch.sum(torch.abs(data_nii), dim=-1) < 1e-6
+    nii_data = torch.split(data_nii, batch_size, dim=0)
     # make scaling map
     t2_vals = torch.from_numpy(db.pd_dataframe[db.pd_dataframe["echo"] == 1]["t2"].values).to(device)
     b1_vals = torch.from_numpy(db.pd_dataframe[db.pd_dataframe["echo"] == 1]["b1"].values).to(device)
@@ -82,7 +111,7 @@ def main(fit_config: options.FitConfig):
         data_batch = nii_data[idx]
 
         # l2 norm difference of magnitude data vs magnitude database
-        # calculate difference, dims db [t1 t2 b1, t], nii-batch [x*y*z*,t]
+        # calculate difference, dims db [t2s t1 t2 b1, t], nii-batch [x*y*z*,t]
         l2_norm_diff = torch.linalg.vector_norm(db_torch_mag[:, None] - data_batch[None, :], dim=-1)
 
         # b1 penalty
@@ -131,12 +160,65 @@ def main(fit_config: options.FitConfig):
     pd_hist_perc = torch.cumsum(pd_hist, dim=0) / torch.sum(pd_hist, dim=0)
     pd_cutoff_value = pd_bins[torch.nonzero(pd_hist_perc > 0.95)[0].item()]
     pd = torch.clamp(pd, min=0.0, max=pd_cutoff_value).numpy(force=True)
+    return t2, r2, b1, pd
+
+
+def main(fit_config: options.FitConfig):
+    # set path
+    path = plib.Path(fit_config.save_path).absolute()
+    log_module.info(f"setup save path: {path.as_posix()}")
+    path.mkdir(parents=True, exist_ok=True)
+
+    # load in data
+    if fit_config.save_name_prefix:
+        fit_config.save_name_prefix += f"_"
+    in_path = plib.Path(fit_config.nii_path).absolute()
+    stem = in_path.stem
+    for suffix in in_path.suffixes:
+        stem = stem.removesuffix(suffix)
+    name = f"{fit_config.save_name_prefix}{stem}"
+
+    log_module.info("__ Load data")
+    data_nii, db, b1_nii, data_affine, b1_affine = io.load_data(fit_config=fit_config)
+    data_nii_input_shape = data_nii.shape
+
+    # for now take only magnitude data
+    db_mag, db_phase, db_norm = db.get_numpy_array_ids_t()
+    # device
+    device = torch.device("cuda:0")
+
+    # set echo types
+    if not fit_config.echo_props_path:
+        warn = "no echo properties given, assuming SE type echo train."
+        log_module.warning(warn)
+        t2, r2, b1, pd = mese_fit(
+            fit_config=fit_config, data_nii=data_nii, name=name, db_torch_mag=torch.from_numpy(db_mag),
+            db=db, device=device, b1_nii=b1_nii
+        )
+        t2p = None
+    else:
+        t2, t2p, r2, b1, pd = megesse_fit(
+            fit_config=fit_config, data_nii=data_nii, db_torch_mag=torch.from_numpy(db_mag),
+            db=db, name=name, b1_nii=b1_nii
+        )
+
+    # we could just sample another value grid
+    # t2_p_resolution = 50
+    # t2_p_values_ms = torch.linspace(1, 100, t2_p_resolution)
+    # t2_p_effect = torch.zeros((t2_p_resolution, db_mag.shape[-1]))
+    # for idx_e in range(db_mag.shape[-1]):
+    #     # calculate t2p effect on curve signal value
+    #     t_eff_ms = abs(echo_props[str(idx_e)]["time_to_adj_se_ms"])
+    #     t2_p_effect[:, idx_e] = torch.exp(-(t_eff_ms / t2_p_values_ms))
 
     # save
     names = [f"t2", f"r2", f"b1", f"pd_like"]
     data = [t2, r2, b1, pd]
+    if t2p is not None:
+        data.append(t2p)
+        names.append("t2p")
     for idx in range(len(data)):
-        save_nii_data(data=data[idx], affine=data_affine, name_prefix=name, name=names[idx])
+        save_nii_data(data=data[idx], affine=data_affine, name_prefix=name, name=names[idx], path=path)
 
 
 def save_nii_data(data, name: str, path: plib.Path, name_prefix: str, affine):
