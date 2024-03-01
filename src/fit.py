@@ -36,6 +36,7 @@ class DictionaryMatchingTv(nn.Module):
         # reshape in dims [xy, t]
         self.signal = torch.reshape(signal, (-1, signal.shape[-1])).to(self.device)
         # want to save some params
+        self.batch_size = 5000
         # dimensions within slice
         self.nx: int = nx
         self.ny: int = ny
@@ -55,12 +56,37 @@ class DictionaryMatchingTv(nn.Module):
         self.t2_range_ms: tuple = t2_range_ms
         self.t2p_range_ms: tuple = t2p_range_ms
         self.b1_range: tuple = b1_range
+        # want to start with the unregularized match
+        self.t2_estimate_init, self.b1_estimate_init = self.estimate_t2_b1()
         # want to optimize for T2s and B1 for a slice of the image
-        t2p_b1 = torch.distributions.Uniform(0, 1).sample((2, nx, ny)).to(self.device)
+        # t2p_b1 = torch.distributions.Uniform(0, 1).sample((2, nx, ny)).to(self.device)
+        # start with random t2p values and the b1 estimate
+        t2p_b1: torch.tensor = torch.zeros((2, nx, ny), device=device)
+        t2p_b1[0] = torch.distributions.Uniform(0, 1).sample((nx, ny)).to(self.device)
+        # reverse effect of range
+        b1 = (self.b1_estimate_init - self.b1_range[0]) / (self.b1_range[1] - self.b1_range[0])
+        t2p_b1[1] = b1.to(device)
         # initialize weights with random numbers
         # make weights torch parameters
         self.estimates: nn.Parameter = nn.Parameter(t2p_b1)
         self.t2_estimate: torch.tensor = torch.zeros((nx, ny))
+
+    def estimate_t2_b1(self) -> (torch.tensor, torch.tensor):
+        # need to batch data of whole slice
+        batch_idx = torch.split(torch.arange(self.signal.shape[0]), self.batch_size)
+        batch_data = torch.split(self.signal, self.batch_size)
+        t2_estimate_init = torch.zeros((self.nx * self.ny))
+        b1_estimate_init = torch.zeros((self.nx * self.ny))
+        for idx_batch in tqdm.trange(len(batch_idx), desc="match dictionary:: unregularized brute force"):
+            data_batch = batch_data[idx_batch]
+            data_idx = batch_idx[idx_batch]
+            # data dims [bs, t], db dims [t2, b1, t]
+            l2_t2_b1 = torch.linalg.norm(data_batch[None, None, :] - self.db_mag[:, :, None], dim=-1)
+            t2_idx = torch.argmin(l2_t2_b1, dim=0)
+            b1_idx = torch.argmin(l2_t2_b1, dim=1)
+            t2_estimate_init[data_idx] = self.db_t2s_ms[t2_idx]
+            b1_estimate_init[data_idx] = self.db_b1s[b1_idx]
+        return t2_estimate_init, b1_estimate_init
 
     def scale_to_range(self, values: torch.tensor, identifier: str):
         if identifier == "t2":
@@ -124,7 +150,7 @@ class DictionaryMatchingTv(nn.Module):
         # t2 = torch.reshape(t2, (self.nx, self.ny))
         t2p = torch.reshape(t2p, (self.nx, self.ny))
         b1 = torch.reshape(b1, (self.nx, self.ny))
-        return self.t2_estimate, t2p, b1
+        return self.t2_estimate, t2p, b1, self.t2_estimate_init, self.b1_estimate_init
 
     def get_db_from_b1(self, b1_vals: torch.tensor):
         b1_idx = torch.argmin((b1_vals[:, None] - self.db_b1s[None, :])**2, dim=-1)
@@ -185,17 +211,19 @@ def plot_loss(losses: list, save_path: plib.Path, title: str):
     log_module.info(f"write file: {fig_name}")
     fig.write_html(fig_name.as_posix())
 
-def plot_maps(t2: torch.tensor, t2p: torch.tensor, b1:torch.tensor, save_path: plib.Path, title: str):
+def plot_maps(t2: torch.tensor, t2p: torch.tensor, b1:torch.tensor,
+              t2_init: torch.tensor, b1_init:torch.tensor,
+              save_path: plib.Path, title: str):
     fig = psub.make_subplots(
-        rows=1, cols=3, shared_xaxes=True, shared_yaxes=True,
-        column_titles=["T2 [ms]", "T2p [ms]", "B1+"],
+        rows=1, cols=5, shared_xaxes=True, shared_yaxes=True,
+        column_titles=["T2 [ms]", "T2p [ms]", "B1+", "T2 init [ms]", "B1+ init"],
         horizontal_spacing=0.01,
         vertical_spacing=0
     )
-    zmin = [0, 0, 0.2]
-    zmax = [100, 100, 1.6]
+    zmin = [0, 0, 0.2, 0, 0.2]
+    zmax = [100, 100, 1.6, 100, 1.6]
     for idx_data in range(3):
-        data = [t2, t2p, b1][idx_data].numpy(force=True)
+        data = [t2, t2p, b1, t2_init, b1_init][idx_data].numpy(force=True)
 
         fig.add_trace(
             go.Heatmap(
@@ -262,9 +290,10 @@ def megesse_fit(
         opt = torch.optim.SGD(slice_optimize_model.parameters(), lr=0.01, momentum=0.9)
         losses = optimization(model=slice_optimize_model, optimizer=opt, n=300)
         # get slice maps
-        t2, t2p, b1 = slice_optimize_model.get_maps()
+        t2, t2p, b1, t2_init, b1_init = slice_optimize_model.get_maps()
         save_path = plib.Path(fit_config.save_path)
         plot_loss(losses, save_path=save_path, title=f'losses_slice_{idx_slice+1}')
+        plot_maps(t2, t2p, b1, save_path=save_path, title=f"maps_slice{idx_slice+1}")
         plot_maps(t2, t2p, b1, save_path=save_path, title=f"maps_slice{idx_slice+1}")
 
     t2, t2p, r2, b1, pd = (None, None, None, None, None)
