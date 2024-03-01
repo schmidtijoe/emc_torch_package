@@ -69,15 +69,16 @@ class DictionaryMatchingTv(nn.Module):
         self.delta_t_t2p_ms = self.delta_t_t2p_ms.to(self.device)
         # t2p_b1 = torch.distributions.Uniform(0, 1).sample((2, nx, ny)).to(self.device)
         # start with random t2p values and the b1 estimate
-        t2p_b1: torch.tensor = torch.zeros((2, nx, ny), device=device)
-        t2p_b1[0] = torch.distributions.Uniform(0, 1).sample((nx, ny)).to(self.device)
+        t2_t2p_b1: torch.tensor = torch.zeros((3, nx, ny), device=device)
+        t2_t2p_b1[1] = torch.distributions.Uniform(0, 1).sample((nx, ny)).to(self.device)
         # reverse effect of range
-        b1 = (self.b1_estimate_init - self.b1_range[0]) / (self.b1_range[1] - self.b1_range[0])
-        t2p_b1[1] = b1.to(device)
+        t2_t2p_b1[2] = ((self.b1_estimate_init - self.b1_range[0]) /
+                        (self.b1_range[1] - self.b1_range[0]).to(self.device))
+        t2_t2p_b1[0] = ((self.t2_estimate_init - self.t2_range_ms[0]) /
+                        (self.t2_range_ms[1] - self.t2p_range_ms[0]).to(self.device))
         # initialize weights with random numbers
         # make weights torch parameters
-        self.estimates: nn.Parameter = nn.Parameter(t2p_b1)
-        self.t2_estimate: torch.tensor = torch.zeros((nx, ny))
+        self.estimates: nn.Parameter = nn.Parameter(t2_t2p_b1)
 
     def estimate_t2_b1_from_se(self) -> (torch.tensor, torch.tensor):
         se_idx = self.delta_t_t2p_ms < 1e-3
@@ -91,7 +92,7 @@ class DictionaryMatchingTv(nn.Module):
         batch_data = torch.split(self.signal[:, se_idx], self.batch_size)
         t2_estimate_init = torch.zeros((self.nx * self.ny), dtype=self.db_t2s_ms.dtype)
         b1_estimate_init = torch.zeros((self.nx * self.ny), dtype=self.db_b1s.dtype)
-        for idx_batch in tqdm.trange(len(batch_idx), desc="match dictionary:: unregularized brute force"):
+        for idx_batch in tqdm.trange(len(batch_idx), desc="match dictionary from SE reads:: unregularized brute force"):
             data_batch = batch_data[idx_batch]
             data_batch = torch.nan_to_num(
                 torch.divide(data_batch, torch.linalg.norm(data_batch, dim=-1, keepdim=True)),
@@ -200,12 +201,14 @@ class DictionaryMatchingTv(nn.Module):
         l2_min = torch.linalg.norm(db - self.signal[None], dim=-1)
         t2_idx = torch.argmin(l2_min, dim=0).detach().cpu()
         # set estimate
-        self.t2_estimate = torch.reshape(self.db_t2s_ms[t2_idx], (self.nx, self.ny))
-        # calculate l2 value as second objective to optimize t2p
+        t2_estimate = self.db_t2s_ms[t2_idx]
+        # calculate deviation from init
+        f_3 = torch.sum((t2_estimate - self.scale_to_range(self.estimates[0], identifier="t2"))**2)
+        # calculate l2 value as objective to optimize t2p
         f_1 = torch.linalg.norm(l2_min, dim=-1)
         f_1 = torch.sum(f_1)
 
-        return f_1 + f_2
+        return f_1 + f_2 + f_3
 
 
 def optimization(model, optimizer, n=3):
