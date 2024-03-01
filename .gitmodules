@@ -1,3 +1,0 @@
-[submodule "src/pypulseq_interface"]
-	path = src/pypulseq_interface
-	url = git@schmidt-jo:schmidt-jo/pypulseq_interface.git
