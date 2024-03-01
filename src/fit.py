@@ -31,8 +31,8 @@ class DictionaryMatchingTv(nn.Module):
             torch.divide(slice_signal, torch.linalg.norm(slice_signal, dim=-1, keepdim=True)),
             nan=0.0, posinf=0.0
         )
-        self.device = device
-        log_module.info(f"set torch device: {device}")
+        self.device = torch.device("cpu")
+        log_module.info(f"set torch device: {self.device}")
         # reshape in dims [xy, t]
         self.signal = torch.reshape(signal, (-1, signal.shape[-1])).to(self.device)
         # want to save some params
@@ -44,14 +44,14 @@ class DictionaryMatchingTv(nn.Module):
         # database and t2 and b1 values
         self.db_t2s_ms: torch.tensor = db_t2s_ms
         self.db_t2s_ms_unique: torch.tensor = torch.unique(db_t2s_ms)
-        self.num_t2s: int = self.db_t2s_ms_unique_.shape[0]
+        self.num_t2s: int = self.db_t2s_ms_unique.shape[0]
         self.db_b1s: torch.tensor = db_b1s
-        self.db_b1s_unique: torch.tensor = torch.unique(db_b1s)
+        self.db_b1s_unique: torch.tensor = torch.unique(db_b1s).to(self.device)
         self.num_b1s: int = self.db_b1s_unique.shape[0]
-        self.db_mag: torch.tensor = db_torch_mag.to(self.device)
+        self.db_mag: torch.tensor = db_torch_mag
         # echo train length and corresponding timings for the attenuation factor as delta to next SE
         self.etl: int = db_torch_mag.shape[-1]
-        self.delta_t_t2p_ms: torch.tensor = delta_t_t2p_ms
+        self.delta_t_t2p_ms: torch.tensor = delta_t_t2p_ms.to(self.device)
         # fit weighting of Tv B1
         self.lambda_b1: float = lambda_b1
         # range of parameters to consider
@@ -59,8 +59,14 @@ class DictionaryMatchingTv(nn.Module):
         self.t2p_range_ms: tuple = t2p_range_ms
         self.b1_range: tuple = b1_range
         # want to start with the unregularized match
-        self.t2_estimate_init, self.b1_estimate_init = self.estimate_t2_b1()
+        self.t2_estimate_init, self.b1_estimate_init = self.estimate_t2_b1_from_se()
         # want to optimize for T2s and B1 for a slice of the image
+        self.device = device
+        log_module.info(f"set torch device: {device}")
+        self.signal = self.signal.to(self.device)
+        self.db_mag = self.db_mag.to(self.device)
+        self.db_b1s_unique = self.db_b1s_unique.to(self.device)
+        self.delta_t_t2p_ms = self.delta_t_t2p_ms.to(self.device)
         # t2p_b1 = torch.distributions.Uniform(0, 1).sample((2, nx, ny)).to(self.device)
         # start with random t2p values and the b1 estimate
         t2p_b1: torch.tensor = torch.zeros((2, nx, ny), device=device)
@@ -83,8 +89,8 @@ class DictionaryMatchingTv(nn.Module):
         # need to batch data of whole slice
         batch_idx = torch.split(torch.arange(self.signal.shape[0]), self.batch_size)
         batch_data = torch.split(self.signal[:, se_idx], self.batch_size)
-        t2_estimate_init = torch.zeros((self.nx * self.ny))
-        b1_estimate_init = torch.zeros((self.nx * self.ny))
+        t2_estimate_init = torch.zeros((self.nx * self.ny), dtype=self.db_t2s_ms.dtype)
+        b1_estimate_init = torch.zeros((self.nx * self.ny), dtype=self.db_b1s.dtype)
         for idx_batch in tqdm.trange(len(batch_idx), desc="match dictionary:: unregularized brute force"):
             data_batch = batch_data[idx_batch]
             data_batch = torch.nan_to_num(
@@ -157,8 +163,8 @@ class DictionaryMatchingTv(nn.Module):
     def get_maps(self):
         # we get the t2 & b1 values from the estimated means, scaled to the range
         # t2 = self.scale_to_range(self.estimates[0], identifier="t2")
-        b1 = self.scale_to_range(self.estimates[2], identifier="b1")
-        t2p = self.scale_to_range(self.estimates[1], identifier="t2p")
+        b1 = self.scale_to_range(self.estimates[1], identifier="b1")
+        t2p = self.scale_to_range(self.estimates[0], identifier="t2p")
         # reshape all
         # t2 = torch.reshape(t2, (self.nx, self.ny))
         t2p = torch.reshape(t2p, (self.nx, self.ny))
@@ -184,15 +190,15 @@ class DictionaryMatchingTv(nn.Module):
         db = self.get_db_from_b1(torch.flatten(b1))
         # calculate attenuation factor by eta
         # dims db [t2, xy, t], dims eta = [xy, t]
-        s_db = db * self.get_etha()[None]
+        db *= self.get_etha()[None]
         # need to normalize data and db
-        s_db = torch.nan_to_num(
-            torch.divide(s_db, torch.linalg.norm(s_db, dim=-1, keepdim=True)),
+        db = torch.nan_to_num(
+            torch.divide(db, torch.linalg.norm(db, dim=-1, keepdim=True)),
             posinf=0.0, nan=0.0
         )
         # find t2 indexes
-        l2_min = torch.linalg.norm(s_db - self.signal[None], dim=-1)
-        t2_idx = torch.argmin(l2_min, dim=0)
+        l2_min = torch.linalg.norm(db - self.signal[None], dim=-1)
+        t2_idx = torch.argmin(l2_min, dim=0).detach().cpu()
         # set estimate
         self.t2_estimate = torch.reshape(self.db_t2s_ms[t2_idx], (self.nx, self.ny))
         # calculate l2 value as second objective to optimize t2p
@@ -209,7 +215,7 @@ def optimization(model, optimizer, n=3):
         loss = model()
         loss.backward()
         optimizer.step()
-        optimizer.zero_grad()
+        optimizer.zero_grad(set_to_none=True)
         losses.append(loss.item())
     return losses
 
@@ -225,7 +231,7 @@ def plot_loss(losses: list, save_path: plib.Path, title: str):
     fig.write_html(fig_name.as_posix())
 
 def plot_maps(t2: torch.tensor, t2p: torch.tensor, b1:torch.tensor,
-              t2_init: torch.tensor, b1_init:torch.tensor,
+              t2_init: torch.tensor, b1_init: torch.tensor,
               save_path: plib.Path, title: str):
     fig = psub.make_subplots(
         rows=1, cols=5, shared_xaxes=True, shared_yaxes=True,
@@ -235,8 +241,9 @@ def plot_maps(t2: torch.tensor, t2p: torch.tensor, b1:torch.tensor,
     )
     zmin = [0, 0, 0.2, 0, 0.2]
     zmax = [100, 100, 1.6, 100, 1.6]
-    for idx_data in range(3):
-        data = [t2, t2p, b1, t2_init, b1_init][idx_data].numpy(force=True)
+    data_list = [t2, t2p, b1, t2_init, b1_init]
+    for idx_data in range(len(data_list)):
+        data = data_list[idx_data].numpy(force=True)
 
         fig.add_trace(
             go.Heatmap(
@@ -263,6 +270,7 @@ def plot_maps(t2: torch.tensor, t2p: torch.tensor, b1:torch.tensor,
 def megesse_fit(
         fit_config: options.FitConfig, data_nii: torch.tensor, db_torch_mag: torch.tensor,
         db: DB, name: str, b1_nii=None):
+    data_nii = data_nii[:,:,17:19,:]
     ep_path = plib.Path(fit_config.echo_props_path).absolute()
     if not ep_path.is_file():
         err = f"echo properties file: {ep_path} not found or not a file."
@@ -295,21 +303,20 @@ def megesse_fit(
         # set up model for slice
         slice_optimize_model = DictionaryMatchingTv(
             db_torch_mag=db_torch_mag, db_t2s_ms=t2_vals*1e3, db_b1s=b1_vals, slice_signal=data_nii[:, :, idx_slice],
-            delta_t_t2p_ms=delta_t_ms_to_se, nx=data_nii.shape[0], ny=data_nii.shape[1],
+            delta_t_t2p_ms=delta_t_ms_to_se, nx=data_nii.shape[0], ny=data_nii.shape[1], device=torch.device("cpu"),
             t2_range_ms=(1e3*torch.min(t2_vals), 1e3*torch.max(t2_vals)),
             b1_range=(torch.min(b1_vals), torch.max(b1_vals))
         )
         # Instantiate optimizer
         opt = torch.optim.SGD(slice_optimize_model.parameters(), lr=0.01, momentum=0.9)
-        losses = optimization(model=slice_optimize_model, optimizer=opt, n=300)
+        losses = optimization(model=slice_optimize_model, optimizer=opt, n=15)
         # get slice maps
         t2, t2p, b1, t2_init, b1_init = slice_optimize_model.get_maps()
         save_path = plib.Path(fit_config.save_path)
         plot_loss(losses, save_path=save_path, title=f'losses_slice_{idx_slice+1}')
-        plot_maps(t2, t2p, b1, save_path=save_path, title=f"maps_slice{idx_slice+1}")
-        plot_maps(t2, t2p, b1, save_path=save_path, title=f"maps_slice{idx_slice+1}")
+        plot_maps(t2, t2p, b1, t2_init, b1_init, save_path=save_path, title=f"maps_slice{idx_slice+1}")
 
-    t2, t2p, r2, b1, pd = (None, None, None, None, None)
+    r2, pd = (None, None)
     return t2, t2p, r2, b1, pd
 
 
