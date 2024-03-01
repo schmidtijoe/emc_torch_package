@@ -43,10 +43,12 @@ class DictionaryMatchingTv(nn.Module):
         self.slice_shape: tuple = (nx, ny)
         # database and t2 and b1 values
         self.db_t2s_ms: torch.tensor = db_t2s_ms
-        self.num_t2s: int = db_t2s_ms.shape[0]
+        self.db_t2s_ms_unique: torch.tensor = torch.unique(db_t2s_ms)
+        self.num_t2s: int = self.db_t2s_ms_unique_.shape[0]
         self.db_b1s: torch.tensor = db_b1s
-        self.num_b1s: int = db_b1s.shape[0]
-        self.db_mag: torch.tensor = torch.reshape(db_torch_mag, (self.num_t2s, self.num_b1s, -1)).to(self.device)
+        self.db_b1s_unique: torch.tensor = torch.unique(db_b1s)
+        self.num_b1s: int = self.db_b1s_unique.shape[0]
+        self.db_mag: torch.tensor = db_torch_mag.to(self.device)
         # echo train length and corresponding timings for the attenuation factor as delta to next SE
         self.etl: int = db_torch_mag.shape[-1]
         self.delta_t_t2p_ms: torch.tensor = delta_t_t2p_ms
@@ -71,21 +73,32 @@ class DictionaryMatchingTv(nn.Module):
         self.estimates: nn.Parameter = nn.Parameter(t2p_b1)
         self.t2_estimate: torch.tensor = torch.zeros((nx, ny))
 
-    def estimate_t2_b1(self) -> (torch.tensor, torch.tensor):
+    def estimate_t2_b1_from_se(self) -> (torch.tensor, torch.tensor):
+        se_idx = self.delta_t_t2p_ms < 1e-3
+        db = self.db_mag[:, se_idx]
+        db = torch.nan_to_num(
+            torch.divide(db, torch.linalg.norm(db, dim=-1, keepdim=True)),
+            posinf=0.0, nan=0.0
+        )
         # need to batch data of whole slice
         batch_idx = torch.split(torch.arange(self.signal.shape[0]), self.batch_size)
-        batch_data = torch.split(self.signal, self.batch_size)
+        batch_data = torch.split(self.signal[:, se_idx], self.batch_size)
         t2_estimate_init = torch.zeros((self.nx * self.ny))
         b1_estimate_init = torch.zeros((self.nx * self.ny))
         for idx_batch in tqdm.trange(len(batch_idx), desc="match dictionary:: unregularized brute force"):
             data_batch = batch_data[idx_batch]
+            data_batch = torch.nan_to_num(
+                torch.divide(data_batch, torch.linalg.norm(data_batch, dim=-1, keepdim=True)),
+                posinf=0.0, nan=0.0
+            )
             data_idx = batch_idx[idx_batch]
-            # data dims [bs, t], db dims [t2, b1, t]
-            l2_t2_b1 = torch.linalg.norm(data_batch[None, None, :] - self.db_mag[:, :, None], dim=-1)
-            t2_idx = torch.argmin(l2_t2_b1, dim=0)
-            b1_idx = torch.argmin(l2_t2_b1, dim=1)
-            t2_estimate_init[data_idx] = self.db_t2s_ms[t2_idx]
-            b1_estimate_init[data_idx] = self.db_b1s[b1_idx]
+            # data dims [bs, t], db dims [t2-b1, t]
+            l2_t2_b1 = torch.linalg.norm(data_batch[None, :] - db[:, None], dim=-1)
+            fit_idx = torch.argmin(l2_t2_b1, dim=0)
+            t2_estimate_init[data_idx] = self.db_t2s_ms[fit_idx]
+            b1_estimate_init[data_idx] = self.db_b1s[fit_idx]
+        t2_estimate_init = torch.reshape(t2_estimate_init, (self.nx, self.ny))
+        b1_estimate_init = torch.reshape(b1_estimate_init, (self.nx, self.ny))
         return t2_estimate_init, b1_estimate_init
 
     def scale_to_range(self, values: torch.tensor, identifier: str):
@@ -153,8 +166,8 @@ class DictionaryMatchingTv(nn.Module):
         return self.t2_estimate, t2p, b1, self.t2_estimate_init, self.b1_estimate_init
 
     def get_db_from_b1(self, b1_vals: torch.tensor):
-        b1_idx = torch.argmin((b1_vals[:, None] - self.db_b1s[None, :])**2, dim=-1)
-        db = self.db_mag[:, b1_idx]
+        b1_idx = torch.argmin((b1_vals[:, None] - self.db_b1s_unique[None, :])**2, dim=-1)
+        db = torch.reshape(self.db_mag, (self.num_t2s, self.num_b1s, -1))[:, b1_idx]
         return db
 
     def forward(self):
@@ -273,8 +286,8 @@ def megesse_fit(
     delta_t_ms_to_se = torch.abs(torch.tensor(delta_t_ms_to_se))
 
     # get values
-    t2_vals = torch.from_numpy(db.pd_dataframe[db.pd_dataframe["echo"] == 1]["t2"].unique())
-    b1_vals = torch.from_numpy(db.pd_dataframe[db.pd_dataframe["echo"] == 1]["b1"].unique())
+    t2_vals = torch.from_numpy(db.pd_dataframe[db.pd_dataframe["echo"] == 1]["t2"].values)
+    b1_vals = torch.from_numpy(db.pd_dataframe[db.pd_dataframe["echo"] == 1]["b1"].values)
     # we want to use the torch ADAM optimizer to optimize our function exploiting torchs internal tools
     # implement slice wise
     for idx_slice in range(data_nii.shape[2]):
