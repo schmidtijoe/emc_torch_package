@@ -1,19 +1,227 @@
 import pathlib as plib
 import nibabel as nib
 import torch
+import numpy as np
+from torch import nn
 import tqdm
 import json
 from emc_torch import DB
 from emc_torch.fitting import options, io
+import plotly.graph_objects as go
+import plotly.subplots as psub
 import logging
+import scipy.interpolate as scinterp
 
 log_module = logging.getLogger(__name__)
 logging.getLogger('simple_parsing').setLevel(logging.WARNING)
 
 
+class DictionaryMatchingTv(nn.Module):
+    """Custom Pytorch model for gradient optimization of our function
+    """
+    def __init__(
+            self, slice_signal: torch.tensor,
+            db_torch_mag: torch.tensor, db_t2s_ms: torch.tensor, db_b1s: torch.tensor,
+            delta_t_t2p_ms: torch.tensor, nx: int, ny: int, device: torch.device = torch.device("cpu"),
+            lambda_b1: float = 0.5, t2_range_ms: tuple = (1, 1000), t2p_range_ms: tuple = (1, 500),
+            b1_range: tuple = (0.2, 1.6)):
+        super().__init__()
+        # save setup as normalized curves
+        signal = torch.nan_to_num(
+            torch.divide(slice_signal, torch.linalg.norm(slice_signal, dim=-1, keepdim=True)),
+            nan=0.0, posinf=0.0
+        )
+        self.device = device
+        log_module.info(f"set torch device: {device}")
+        # reshape in dims [xy, t]
+        self.signal = torch.reshape(signal, (-1, signal.shape[-1])).to(self.device)
+        # want to save some params
+        # dimensions within slice
+        self.nx: int = nx
+        self.ny: int = ny
+        self.slice_shape: tuple = (nx, ny)
+        # database and t2 and b1 values
+        self.db_t2s_ms: torch.tensor = db_t2s_ms
+        self.num_t2s: int = db_t2s_ms.shape[0]
+        self.db_b1s: torch.tensor = db_b1s
+        self.num_b1s: int = db_b1s.shape[0]
+        self.db_mag: torch.tensor = torch.reshape(db_torch_mag, (self.num_t2s, self.num_b1s, -1)).to(self.device)
+        # echo train length and corresponding timings for the attenuation factor as delta to next SE
+        self.etl: int = db_torch_mag.shape[-1]
+        self.delta_t_t2p_ms: torch.tensor = delta_t_t2p_ms
+        # fit weighting of Tv B1
+        self.lambda_b1: float = lambda_b1
+        # range of parameters to consider
+        self.t2_range_ms: tuple = t2_range_ms
+        self.t2p_range_ms: tuple = t2p_range_ms
+        self.b1_range: tuple = b1_range
+        # want to optimize for T2s and B1 for a slice of the image
+        t2p_b1 = torch.distributions.Uniform(0, 1).sample((2, nx, ny)).to(self.device)
+        # initialize weights with random numbers
+        # make weights torch parameters
+        self.estimates: nn.Parameter = nn.Parameter(t2p_b1)
+        self.t2_estimate: torch.tensor = torch.zeros((nx, ny))
+
+    def scale_to_range(self, values: torch.tensor, identifier: str):
+        if identifier == "t2":
+            v_range = self.t2_range_ms
+        elif identifier == "t2p":
+            v_range = self.t2p_range_ms
+        elif identifier == "b1":
+            v_range = self.b1_range
+        else:
+            err = "identifier not recognized"
+            log_module.error(err)
+            raise ValueError(err)
+        return v_range[0] + (v_range[1] - v_range[0]) * values
+
+    def interpolate_db(self):
+        # get t2 values
+        t2_vals = torch.flatten(self.scale_to_range(values=self.estimates[0], identifier="t2")).detach().numpy()
+        # get b1 values
+        b1_vals = torch.flatten(self.scale_to_range(values=self.estimates[2], identifier="b1")).detach().numpy()
+        # we want to interpolate the database for those values
+        db_interp = scinterp.interpn(
+            points=(self.db_t2s_ms, self.db_b1s),
+            values=self.db_mag.numpy(),
+            xi=(t2_vals, b1_vals)
+        )
+        return torch.from_numpy(db_interp)
+
+
+        # def sample_and_find_db_idx(self, t2_or_b1: bool):
+        #     if t2_or_b1:
+        #         # for t2
+        #         t2_val = self.t2_range_ms[0] + (self.t2_range_ms[1] - self.t2_range_ms[0]) * self.estimates[0]
+        #         t2_scale = self.t2_range_ms[0] + (self.t2_range_ms[1] - self.t2_range_ms[0]) * self.spread[0]
+        #         # want to sample according to spread to get variations
+        #         t2_val = torch.distributions.Normal(t2_val, t2_scale).sample()
+        #         # find closest db entry
+        #         t2_idx = torch.argmin((t2_val[:, :, None] - self.db_t2s_ms[None, None, :])**2, dim=-1)
+        #         return t2_idx
+        #     else:
+        #         # for b1
+        #         b1_val = self.b1_range[0] + (self.b1_range[1] - self.b1_range[0]) * self.estimates[2]
+        #         b1_scale = self.b1_range[0] + (self.b1_range[1] - self.b1_range[0]) * self.spread[1]
+        #         b1_val = torch.distributions.Normal(b1_val, b1_scale).sample()
+        #         # want to find the next entry in db
+        #         b1_idx = torch.argmin((b1_val[:, :, None] - self.db_b1s[None, None, :])**2, dim=-1)
+        #         return b1_idx
+
+    def get_etha(self):
+        # input is t2p, in dims [x,y], get out attenuation factor based on time t and dims [xy, t]
+        flat_t2p = torch.flatten(self.estimates[0])
+        # scale to ms range
+        flat_t2p = self.scale_to_range(values=flat_t2p, identifier="t2p")
+        return torch.exp(-self.delta_t_t2p_ms[None, :] / flat_t2p[:, None])
+
+    def get_maps(self):
+        # we get the t2 & b1 values from the estimated means, scaled to the range
+        # t2 = self.scale_to_range(self.estimates[0], identifier="t2")
+        b1 = self.scale_to_range(self.estimates[2], identifier="b1")
+        t2p = self.scale_to_range(self.estimates[1], identifier="t2p")
+        # reshape all
+        # t2 = torch.reshape(t2, (self.nx, self.ny))
+        t2p = torch.reshape(t2p, (self.nx, self.ny))
+        b1 = torch.reshape(b1, (self.nx, self.ny))
+        return self.t2_estimate, t2p, b1
+
+    def get_db_from_b1(self, b1_vals: torch.tensor):
+        b1_idx = torch.argmin((b1_vals[:, None] - self.db_b1s[None, :])**2, dim=-1)
+        db = self.db_mag[:, b1_idx]
+        return db
+
+    def forward(self):
+        """Implement function to be optimised.
+        In this case we get the input Signal per slice
+        ||theta * eta - S||_l2 + lambda_b1 || B1 ||_Tv
+        """
+        # we get the b1 values for the latest estimate
+        b1 = self.scale_to_range(self.estimates[1], identifier="b1")
+        # we calculate the total variation as one objective
+        f_2 = torch.gradient(b1, dim=(0, 1))
+        f_2 = torch.sum(torch.abs(f_2[0]) + torch.abs(f_2[1]))
+        # we get the database for the closest matching b1 entries
+        db = self.get_db_from_b1(torch.flatten(b1))
+        # calculate attenuation factor by eta
+        # dims db [t2, xy, t], dims eta = [xy, t]
+        s_db = db * self.get_etha()[None]
+        # need to normalize data and db
+        s_db = torch.nan_to_num(
+            torch.divide(s_db, torch.linalg.norm(s_db, dim=-1, keepdim=True)),
+            posinf=0.0, nan=0.0
+        )
+        # find t2 indexes
+        l2_min = torch.linalg.norm(s_db - self.signal[None], dim=-1)
+        t2_idx = torch.argmin(l2_min, dim=0)
+        # set estimate
+        self.t2_estimate = torch.reshape(self.db_t2s_ms[t2_idx], (self.nx, self.ny))
+        # calculate l2 value as second objective to optimize t2p
+        f_1 = torch.linalg.norm(l2_min, dim=-1)
+        f_1 = torch.sum(f_1)
+
+        return f_1 + f_2
+
+
+def optimization(model, optimizer, n=3):
+    "Training loop for torch model."
+    losses = []
+    for i in tqdm.trange(n):
+        loss = model()
+        loss.backward()
+        optimizer.step()
+        optimizer.zero_grad()
+        losses.append(loss.item())
+    return losses
+
+
+def plot_loss(losses: list, save_path: plib.Path, title: str):
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scattergl(x=np.arange(losses.__len__()), y=losses)
+    )
+    fig.update_layout(width=800, height=500)
+    fig_name = save_path.joinpath(title).with_suffix(".html")
+    log_module.info(f"write file: {fig_name}")
+    fig.write_html(fig_name.as_posix())
+
+def plot_maps(t2: torch.tensor, t2p: torch.tensor, b1:torch.tensor, save_path: plib.Path, title: str):
+    fig = psub.make_subplots(
+        rows=1, cols=3, shared_xaxes=True, shared_yaxes=True,
+        column_titles=["T2 [ms]", "T2p [ms]", "B1+"],
+        horizontal_spacing=0.01,
+        vertical_spacing=0
+    )
+    zmin = [0, 0, 0.2]
+    zmax = [100, 100, 1.6]
+    for idx_data in range(3):
+        data = [t2, t2p, b1][idx_data].numpy(force=True)
+
+        fig.add_trace(
+            go.Heatmap(
+                z=data, transpose=True, zmin=zmin[idx_data], zmax=zmax[idx_data],
+                showscale=False, colorscale="Magma"
+            ),
+            row=1, col=1+idx_data
+        )
+        if idx_data > 0:
+            x = f"x{idx_data+1}"
+        else:
+            x = "x"
+        fig.update_xaxes(visible=False, row=1, col=1+idx_data)
+        fig.update_yaxes(visible=False, row=1, col=1+idx_data, scaleanchor=x)
+
+    fig.update_layout(
+        width=1000, height=500
+    )
+    fig_name = save_path.joinpath(title).with_suffix(".html")
+    log_module.info(f"write file: {fig_name}")
+    fig.write_html(fig_name.as_posix())
+
+
 def megesse_fit(
         fit_config: options.FitConfig, data_nii: torch.tensor, db_torch_mag: torch.tensor,
-        db: DB, name:str, b1_nii=None):
+        db: DB, name: str, b1_nii=None):
     ep_path = plib.Path(fit_config.echo_props_path).absolute()
     if not ep_path.is_file():
         err = f"echo properties file: {ep_path} not found or not a file."
@@ -22,7 +230,7 @@ def megesse_fit(
     log_module.info(f"loading echo property file: {ep_path}")
     with open(ep_path.as_posix(), "r") as j_file:
         echo_props = json.load(j_file)
-    fit_se = False
+
     if echo_props.__len__() < db_torch_mag.shape[-1]:
         warn = "echo type list not filled or shorter than database etl. filling with SE type acquisitions"
         log_module.warning(warn)
@@ -30,20 +238,34 @@ def megesse_fit(
         # if the list is too short or insufficiently filled we assume SE acquisitions
         echo_props[echo_props.__len__()] = {"type": "SE", "te_ms": 0.0, "time_to_adj_se_ms": 0.0}
     # possibly need some kind of convenient class to coherently store information
-    # get number of SE and GRE
-    idx_se = []
-    idx_gre = []
+    # need tensor to hold time deltas to SE
+    delta_t_ms_to_se = []
     for idx_e in range(echo_props.__len__()):
-        if echo_props[str(idx_e)]["type"] == "SE":
-            idx_se.append(idx_e)
-        elif echo_props[str(idx_e)]["type"] == "GRE":
-            idx_gre.append(idx_e)
-        else:
-            err = "unknown echo type in separating SE and GRE data"
-            log_module.error(err)
-            raise AttributeError(err)
-    num_se = len(idx_se)
-    num_gre = len(idx_gre)
+        delta_t_ms_to_se.append((echo_props[str(idx_e)]["time_to_adj_se_ms"]))
+    delta_t_ms_to_se = torch.abs(torch.tensor(delta_t_ms_to_se))
+
+    # get values
+    t2_vals = torch.from_numpy(db.pd_dataframe[db.pd_dataframe["echo"] == 1]["t2"].unique())
+    b1_vals = torch.from_numpy(db.pd_dataframe[db.pd_dataframe["echo"] == 1]["b1"].unique())
+    # we want to use the torch ADAM optimizer to optimize our function exploiting torchs internal tools
+    # implement slice wise
+    for idx_slice in range(data_nii.shape[2]):
+        log_module.info(f"Process slice {idx_slice + 1} of {data_nii.shape[2]}")
+        # set up model for slice
+        slice_optimize_model = DictionaryMatchingTv(
+            db_torch_mag=db_torch_mag, db_t2s_ms=t2_vals*1e3, db_b1s=b1_vals, slice_signal=data_nii[:, :, idx_slice],
+            delta_t_t2p_ms=delta_t_ms_to_se, nx=data_nii.shape[0], ny=data_nii.shape[1],
+            t2_range_ms=(1e3*torch.min(t2_vals), 1e3*torch.max(t2_vals)),
+            b1_range=(torch.min(b1_vals), torch.max(b1_vals))
+        )
+        # Instantiate optimizer
+        opt = torch.optim.SGD(slice_optimize_model.parameters(), lr=0.01, momentum=0.9)
+        losses = optimization(model=slice_optimize_model, optimizer=opt, n=300)
+        # get slice maps
+        t2, t2p, b1 = slice_optimize_model.get_maps()
+        save_path = plib.Path(fit_config.save_path)
+        plot_loss(losses, save_path=save_path, title=f'losses_slice_{idx_slice+1}')
+        plot_maps(t2, t2p, b1, save_path=save_path, title=f"maps_slice{idx_slice+1}")
 
     t2, t2p, r2, b1, pd = (None, None, None, None, None)
     return t2, t2p, r2, b1, pd
@@ -201,15 +423,6 @@ def main(fit_config: options.FitConfig):
             fit_config=fit_config, data_nii=data_nii, db_torch_mag=torch.from_numpy(db_mag),
             db=db, name=name, b1_nii=b1_nii
         )
-
-    # we could just sample another value grid
-    # t2_p_resolution = 50
-    # t2_p_values_ms = torch.linspace(1, 100, t2_p_resolution)
-    # t2_p_effect = torch.zeros((t2_p_resolution, db_mag.shape[-1]))
-    # for idx_e in range(db_mag.shape[-1]):
-    #     # calculate t2p effect on curve signal value
-    #     t_eff_ms = abs(echo_props[str(idx_e)]["time_to_adj_se_ms"])
-    #     t2_p_effect[:, idx_e] = torch.exp(-(t_eff_ms / t2_p_values_ms))
 
     # save
     names = [f"t2", f"r2", f"b1", f"pd_like"]
