@@ -156,7 +156,9 @@ class GradPulse:
             params.pulse.resample_to_duration(duration_in_us=int(duration_us),
                                               excitation=excitation)
         # resample pulse to given dt in us for more efficient computation
-        if np.abs(params.pulse.get_dt_sampling_in_us() - params.config.resample_pulse_to_dt_us) > 1.0:
+        if np.abs(
+                params.pulse.get_dt_sampling_in_us(excitation=excitation) - params.config.resample_pulse_to_dt_us
+        ) > 1.0:
             params.pulse.set_shape_on_raster(raster_time_s=params.config.resample_pulse_to_dt_us * 1e-6,
                                              excitation=excitation)
         return params
@@ -291,8 +293,8 @@ class GradPulse:
 
     def assign_data(self, grad: torch.tensor, pulse_cplx: torch.tensor):
         self.data_grad = grad
-        self.data_pulse_x = pulse_cplx.real
-        self.data_pulse_y = pulse_cplx.imag
+        self.data_pulse_x = torch.real(pulse_cplx)
+        self.data_pulse_y = torch.imag(pulse_cplx)
 
         self._set_float32()
 
@@ -320,6 +322,7 @@ class Timing:
 
     def set_device(self, device):
         self.value_us.to(device)
+
 
 class SequenceTimings:
     def __init__(self):

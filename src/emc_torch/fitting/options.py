@@ -32,6 +32,8 @@ class FitConfig(sp.Serializable):
     use_gpu: bool = sp.field(alias="-gpu", default=True)
     # gpu device
     gpu_device: int = sp.field(alias="-gpud", default=0)
+    # set echo properties for combined estimation of T2s
+    echo_props_path: str = sp.field(alias="-ep", default="")
 
     # flags
     # visualization
