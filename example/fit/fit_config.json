@@ -1,0 +1,9 @@
+{
+  "config_file": "example/fit/fit_config.json",
+  "nii_path": "example/fit/phantom_slice_echo_mag_data.nii.gz",
+  "save_path": "example/fit/",
+  "save_name": "semc_phantom",
+  "database_file": "example/fit/emc_db.pkl",
+  "b1_file": "example/fit/b1_slice.nii.gz",
+  "debug": false
+}

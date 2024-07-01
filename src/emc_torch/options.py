@@ -20,7 +20,7 @@ class SimulationConfig(sp.Serializable):
         Configuration for simulation
         """
     # provide Configuration file (.json)
-    config_file: str = sp.field(alias="-c", default="")
+    config_file: str = sp.field(alias="-c", default="example/simulate/emc_config.json")
     # set filepath to interface
     pypsi_path: str = sp.field(alias="-p", default="")
     # provide separate sequence params (optional if no pypsi interface available)
@@ -213,6 +213,7 @@ class SimulationParameters(sp.Serializable):
             file = sim_params.config.emc_seq_file
             if "emc_seq_file" in non_default_config.keys():
                 file = args.config.emc_seq_file
+            file = plib.Path(file).absolute()
             sim_params._set_sequence(sequence=pypsi.parameters.EmcParameters.load(file))
             if o_path_from_pyp:
                 sim_params.config.save_path = plib.Path(file).absolute().parent.as_posix()
@@ -222,14 +223,15 @@ class SimulationParameters(sp.Serializable):
             file = sim_params.config.pulse_file
             if "emc_seq_file" in non_default_config.keys():
                 file = args.config.pulse_file
+            file = plib.Path(file).absolute()
             sim_params._set_pulse(pulse=pypsi.parameters.rf_params.RFPulse.load(file))
         else:
             err_w_file.append("pulse file")
 
         if err_w_file and not pypsi_set:
             err = f"neither direct {err_w_file} nor pypulseq interface file provided."
-            log_module.error(err)
-
+            log_module.warning(err)
+            raise FileNotFoundError(err)
         return sim_params
 
     def _check_non_default_vars(self) -> (dict, dict):

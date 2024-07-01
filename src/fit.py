@@ -11,8 +11,6 @@ import plotly.graph_objects as go
 import plotly.subplots as psub
 import logging
 import scipy.interpolate as scinterp
-import yabox as yb
-from yabox.algorithms import DE as ybde
 
 log_module = logging.getLogger(__name__)
 logging.getLogger('simple_parsing').setLevel(logging.WARNING)
@@ -382,17 +380,17 @@ class DictionaryMatchingTv(nn.Module):
         return self.forward().numpy()
 
 
-def yb_optimization(model: DictionaryMatchingTv):
-    loss = model.yb_function
-    # optimize maps t2, t2p, b1, each with bounds (0,1), treat it as 1d vector of 3 times nx*ny dims
-    bounds = [(0, 1)] * model.nx * model.ny * 3
-    de = ybde(loss, bounds=bounds, maxiters=10, popsize=2 * len(bounds))
-    for step in tqdm.tqdm(de.geniterator()):
-        idx = step.best_idx
-        norm_vector = step.population[idx]
-        best_params = de.denormalize([norm_vector])
-        log_module.info(step.best_fitness, norm_vector, best_params[0])
-    return best_params
+# def yb_optimization(model: DictionaryMatchingTv):
+#     loss = model.yb_function
+#     # optimize maps t2, t2p, b1, each with bounds (0,1), treat it as 1d vector of 3 times nx*ny dims
+#     bounds = [(0, 1)] * model.nx * model.ny * 3
+#     de = ybde(loss, bounds=bounds, maxiters=10, popsize=2 * len(bounds))
+#     for step in tqdm.tqdm(de.geniterator()):
+#         idx = step.best_idx
+#         norm_vector = step.population[idx]
+#         best_params = de.denormalize([norm_vector])
+#         log_module.info(step.best_fitness, norm_vector, best_params[0])
+#     return best_params
 
 
 def optimization(model, optimizer, n=3):

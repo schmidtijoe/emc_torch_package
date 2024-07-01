@@ -12,7 +12,7 @@ class FitConfig(sp.Serializable):
         Configuration for Fitting
         """
     # provide Configuration file (.json)
-    config_file: str = sp.field(alias="-c", default="")
+    config_file: str = sp.field(alias="-c", default="example/fit/fit_config.json")
     # set filepath to nii file
     nii_path: str = sp.field(alias="-i", default="")
     # set path to save database and used config

@@ -1,12 +1,19 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [project]
-name = "pyloraks_js"
-version = "0.0.1"
-authors = [
-  { name="Jochen Schmidt", email="" },
-]
-description = "A small example package"
-readme = "README.md"
+name = "emc_torch"
+version = "2024.0.1"
 requires-python = ">=3.8"
+authors = [
+  { name="Jochen Schmidt", email="jschmidt@cbs.mpg.de" },
+  { name="Patrick Scheibe", email="pscheibe@cbs.mpg.de" },
+]
+description = "EMC package for Bloch Equation Sequence Simulation written with PyTorch"
+readme = "README.rst"
+license = {file = "LICENSE.txt"}
+keywords = ["EMC", "MRI", "dictionary reconstruction", "Bloch Equation Simulation"]
 classifiers = [
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: MIT License",
@@ -14,5 +21,5 @@ classifiers = [
 ]
 
 [project.urls]
-"Homepage" = "https://github.com/pypa/sampleproject"
-"Bug Tracker" = "https://github.com/pypa/sampleproject/issues"
+Homepage = "https://github.com/schmidt-jo/emc_torch"
+Repository = "https://github.com/schmidt-jo/emc_torch"

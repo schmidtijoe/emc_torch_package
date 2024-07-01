@@ -1,0 +1,50 @@
+{
+  "config": {
+    "config_file": "example/simulate/emc_config.json",
+    "pypsi_path": "",
+    "emc_seq_file": "example/simulate/emc_params.json",
+    "pulse_file": "example/simulate/pulse_pypulseq_default_gauss.pkl",
+    "save_path": "example/simulate/",
+    "database_name": "emc_db_example.pkl",
+    "sim_type": "mese",
+    "signal_fourier_sampling": false,
+    "visualize": true,
+    "debug": false,
+    "resample_pulse_to_dt_us": 5.0,
+    "use_gpu": true,
+    "gpu_device": 0
+  },
+  "settings": {
+    "sample_number": 1000,
+    "length_z": 0.005,
+    "acquisition_number": 50,
+    "t1_list": [
+      1.5
+    ],
+    "t2_list": [
+      [
+        1,
+        60,
+        2
+      ],
+      [
+        60,
+        200,
+        10
+      ],
+      [
+        200,
+        1000,
+        50
+      ]
+    ],
+    "b1_list": [
+      [
+        0.2,
+        1.5,
+        0.1
+      ]
+    ],
+    "total_num_sim": 43940
+  }
+}
