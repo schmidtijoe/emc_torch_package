@@ -16,8 +16,13 @@ def main():
     base_path = plib.Path(__file__).absolute().parent.parent
     emc_opts = emc_torch.options.SimulationParameters.load_defaults()
     # for now set jstmc sequence pypsi file to use
-    pyp_path = base_path.joinpath("optimizations/config/pypsi_jsopti_mese_acc3_1a.pkl")
-    run_path = plib.Path("/data/pt_np-jschmidt/data/03_sequence_dev/jstmc_optimized_et/optimization/").absolute()
+    pyp_path = plib.Path(
+        "/data/pt_np-jschmidt/data/03_sequence_dev/mese_pulse_train_optimization/"
+        "base_seq_acc3_res0p7_etl8/pypsi_jsopti_mese_acc3_1a.pkl"
+    ).absolute()
+    run_path = plib.Path(
+        "/data/pt_np-jschmidt/data/03_sequence_dev/mese_pulse_train_optimization/"
+    ).absolute()
     logging.info(f"load pypsi interface file {pyp_path}")
     emc_opts.set_pypsi_interface(pyp=pyp_path)
     # set some paths
@@ -25,6 +30,7 @@ def main():
     emc_opts.config.save_path = run_path.as_posix()
     # use gpu
     emc_opts.config.use_gpu = True
+    emc_opts.config.gpu_device = 0
     # no visuals
     emc_opts.config.visualize = False
 
@@ -54,29 +60,40 @@ def main():
     emc_curves_mag = torch.reshape(emc_curves_mag, (-1, emc_curves_mag.shape[-1]))
 
     logging.info("Calculate losses")
-    # get area under curve as proxy for signal aka SNR, want the sum of the signals to be as high as possible
+    # we weight snr against sar loss, for now a bit higher
+    lambda_snr_sar = 0.95
+    # get area under curve as proxy for signal aka SNR, want the mean of the signals to be as high as possible
     # since we dont want certain areas of the field to drive we take a mean
-    signal_loss = torch.mean(emc_curves_mag)
-    # get l2 difference between normalized curves
-    emc_curves_mag_norm = torch.linalg.norm(emc_curves_mag, dim=-1, keepdim=True)
-    emc_curves_mag_normalized = torch.nan_to_num(emc_curves_mag / emc_curves_mag_norm, nan=0.0, posinf=0.0)
-    l2_diff = torch.linalg.norm(emc_curves_mag_normalized[:, None] - emc_curves_mag_normalized[None, :], dim=-1)
-    # l2_plot = l2_diff.cpu().numpy()
-    # lets plot for viualizing
-    # fig = go.Figure()
-    # fig.add_trace(
-    #     go.Heatmap(z=l2_plot)
-    # )
-    # fig_name = out_path.joinpath(f"run-{r+1}_l2_diff_of_all_curves").with_suffix(".png")
-    # logging.info(f"write file: {fig_name}")
-    # fig.write_image(fig_name.as_posix())
+    snr_loss = torch.mean(torch.linalg.norm(emc_curves_mag, dim=-1))
 
-    # we want this to be maximal, the rationale is that then curve mismatch is higher for different curves,
-    # its a diagonal symmetric matrix
-    # since we dont want certain areas of the field to drive the sum we take a mean
-    mismatch_loss = torch.mean(l2_diff)
-    logging.info(f"Signal loss; {signal_loss.item():.5f}, mismatch loss: {mismatch_loss.item():.5f}")
-    wandb.log({"loss": -signal_loss - mismatch_loss, "signal loss": signal_loss, "mismatch loss": mismatch_loss})
+    # we want the SAR to be minimal, for simplicity we just take the square of the flip angles in radians.
+    sar_loss = torch.mean(torch.square(torch.tensor(fa_s) / 180.0 * torch.pi))
+
+    # get l2 difference between normalized curves
+    # emc_curves_mag_norm = torch.linalg.norm(emc_curves_mag, dim=-1, keepdim=True)
+    # emc_curves_mag_normalized = torch.nan_to_num(emc_curves_mag / emc_curves_mag_norm, nan=0.0, posinf=0.0)
+    # l2_diff = torch.linalg.norm(emc_curves_mag_normalized[:, None] - emc_curves_mag_normalized[None, :], dim=-1)
+    # # l2_plot = l2_diff.cpu().numpy()
+    # # lets plot for viualizing
+    # # fig = go.Figure()
+    # # fig.add_trace(
+    # #     go.Heatmap(z=l2_plot)
+    # # )
+    # # fig_name = out_path.joinpath(f"run-{r+1}_l2_diff_of_all_curves").with_suffix(".png")
+    # # logging.info(f"write file: {fig_name}")
+    # # fig.write_image(fig_name.as_posix())
+    #
+    # # we want this to be maximal, the rationale is that then curve mismatch is higher for different curves,
+    # # its a diagonal symmetric matrix
+    # # since we dont want certain areas of the field to drive the sum we take a mean
+    # mismatch_loss = torch.mean(l2_diff)
+
+    # goal is to minimize the overall loss.
+    # we want to maximize SNR -> hence take negative snr loss
+    # we want to minimize SAR -> hence take positive sar loss
+    logging.info(f"SNR loss; {snr_loss.item():.5f}, SAR loss: {sar_loss.item():.5f}")
+    loss = - lambda_snr_sar * snr_loss + (1 - lambda_snr_sar) * sar_loss
+    wandb.log({"loss": loss, "SNR loss": snr_loss, "SAR loss": sar_loss})
 
 
 if __name__ == '__main__':
