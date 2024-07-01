@@ -20,7 +20,7 @@ class SimulationConfig(sp.Serializable):
         Configuration for simulation
         """
     # provide Configuration file (.json)
-    config_file: str = sp.field(alias="-c", default="example/simulate/emc_config.json")
+    config_file: str = sp.field(alias="-c", default="../example/simulate/emc_config.json")
     # set filepath to interface
     pypsi_path: str = sp.field(alias="-p", default="")
     # provide separate sequence params (optional if no pypsi interface available)
@@ -168,7 +168,8 @@ class SimulationParameters(sp.Serializable):
         non_default_config, non_default_settings = sim_params._check_non_default_vars()
 
         if args.config.config_file:
-            sim_params = SimulationParameters.load(args.config.config_file)
+            file = plib.Path(args.config.config_file).absolute()
+            sim_params = SimulationParameters.load(file)
             # overwrite non default input args
             for key, value in non_default_config.items():
                 sim_params.config.__setattr__(key, value)

@@ -1,10 +1,10 @@
 {
   "config": {
-    "config_file": "example/simulate/emc_config.json",
+    "config_file": "../example/simulate/emc_config.json",
     "pypsi_path": "",
-    "emc_seq_file": "example/simulate/emc_params.json",
-    "pulse_file": "example/simulate/pulse_pypulseq_default_gauss.pkl",
-    "save_path": "example/simulate/",
+    "emc_seq_file": "../example/simulate/emc_params.json",
+    "pulse_file": "../example/simulate/pulse_pypulseq_default_gauss.pkl",
+    "save_path": "../example/simulate/",
     "database_name": "emc_db_example.pkl",
     "sim_type": "mese",
     "signal_fourier_sampling": false,
