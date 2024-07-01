@@ -43,8 +43,8 @@ def core_sim(sim_params: options.SimulationParameters) -> db_class.DB:
         sim_obj = simulations.MESE(sim_params=sim_params)
     elif sim_params.config.sim_type == "megesse":
         sim_obj = simulations.MEGESSE(sim_params=sim_params)
-    # elif sim_params.config.sim_type == "fid":
-    #     sim_obj = simulations.FID(sim_params=sim_params, device=device)
+    elif sim_params.config.sim_type == "megessevesp":
+        sim_obj = simulations.MEGESSEVESP(sim_params=sim_params)
     # if sim_params.config.sim_type == "single":
     #     sim_obj = simulations.(sim_params=sim_params, device=device)
     else:

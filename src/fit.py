@@ -412,7 +412,8 @@ class BruteForce:
     def __init__(self, slice_signal: torch.tensor,
                  db_torch_mag: torch.tensor, db_t2s_s: torch.tensor, db_b1s: torch.tensor,
                  delta_t_r2p_ms: torch.tensor, device: torch.device = torch.device("cpu"),
-                 r2p_range_Hz: tuple = (0.001, 200), r2p_sampling_size: int = 220):
+                 r2p_range_Hz: tuple = (0.001, 200), r2p_sampling_size: int = 220, slice_b1: torch.tensor = None,
+                 b1_weighting_factor: float = 0.5):
         log_module.info("Brute Force matching algorithm")
         # save some vars
         # torch gpu processing
@@ -421,107 +422,116 @@ class BruteForce:
         self.batch_size: int = 2000
 
         self.nx, self.ny, self.etl = slice_signal.shape
-        self.delta_t_r2p_s: torch.tensor = 1e-3 * delta_t_r2p_ms
+        self.delta_t_r2p_s: torch.tensor = 1e-3 * delta_t_r2p_ms.to(self.device)
         # database and t2 and b1 values
-        self.db_t2s_s: torch.tensor = db_t2s_s
         self.db_t2s_s_unique: torch.tensor = torch.unique(db_t2s_s).to(self.device)
         self.num_t2s: int = self.db_t2s_s_unique.shape[0]
-        self.db_b1s: torch.tensor = db_b1s
         self.db_b1s_unique: torch.tensor = torch.unique(db_b1s).to(self.device)
         self.db_delta_b1: torch.tensor = torch.diff(self.db_b1s_unique)[0]
         self.num_b1s: int = self.db_b1s_unique.shape[0]
         self.db_mag: torch.tensor = db_torch_mag.to(self.device)
-        self.db_mag_shaped = torch.reshape(db_torch_mag, (self.num_t2s, self.num_b1s, self.etl))
+        self.db_mag_shaped = torch.reshape(db_torch_mag, (self.num_t2s, self.num_b1s, self.etl)).to(self.device)
 
+        # take signal as input
         self.signal = torch.reshape(slice_signal, (-1, self.etl)).to(self.device)
 
-        # get initial estimate via SE data
-        self.t2_estimate_init, self.b1_estimate_init = self.estimate_t2_b1_from_se()
+        self.b1: torch.tensor = slice_b1
+        if self.b1 is not None:
+            self.b1w = True
+            self.b1 = torch.flatten(self.b1).to(self.device)
+            self.b1w_factor = b1_weighting_factor
+        else:
+            self.b1w = False
+            self.b1w_factor = 0.0
 
-        # set up db to include r2p
-        self.db_r2ps_unique = torch.linspace(*r2p_range_Hz, r2p_sampling_size)
-        self.num_r2ps = r2p_sampling_size
-        etha = torch.exp(-self.delta_t_r2p_s[None, :] * self.db_r2ps_unique[:, None])
-        self.db_mag_shaped = self.db_mag_shaped[:, None] * etha[None, :, None, :]
+        # set up SE based signal
+        self.se_select = torch.abs(self.delta_t_r2p_s) < 1e-9
+        # norm
+        self.se_signal_norm = torch.linalg.norm(self.signal[:, self.se_select], dim=-1, keepdim=True)
+        self.se_db_mag_norm = torch.linalg.norm(self.db_mag_shaped[:, :, self.se_select], dim=-1, keepdim=True)
+
+        # normalize both full echo trains based on the SE norms, so the se data coincides
         self.db_mag_shaped = torch.nan_to_num(
-            torch.divide(
-                self.db_mag_shaped,
-                torch.linalg.norm(self.db_mag_shaped, dim=-1, keepdim=True)
-            ),
+            torch.divide(self.db_mag_shaped, self.se_db_mag_norm),
             nan=0.0, posinf=0.0
         )
-        self.db_r2ps = torch.flatten(self.db_r2ps_unique[None, :, None].expand(self.num_t2s, -1, self.num_b1s))
-        self.db_t2s_s = torch.flatten(
-            torch.reshape(
-                self.db_t2s_s, (self.num_t2s, self.num_b1s)
-            )[:, None, :].expand(-1, self.num_r2ps, -1)
+        self.signal = torch.nan_to_num(
+            torch.divide(self.signal, self.se_signal_norm),
+            nan=0.0, posinf=0.0
         )
-        self.db_b1s = torch.flatten(
-            torch.reshape(
-                self.db_b1s, (self.num_t2s, self.num_b1s)
-            )[:, None, :].expand(-1, self.num_r2ps, -1)
-        )
-        self.db_mag = torch.reshape(self.db_mag_shaped, (-1, self.etl)).to(device)
 
-        self.estimates_t2 = torch.zeros((self.nx * self.ny), dtype=self.db_t2s_s.dtype)
-        self.estimates_r2p = torch.zeros((self.nx * self.ny), dtype=self.db_r2ps.dtype)
-        self.estimates_b1 = torch.zeros((self.nx * self.ny), dtype=self.db_b1s.dtype)
+        self.estimates_t2 = torch.zeros((self.nx * self.ny), dtype=self.db_t2s_s_unique.dtype)
+        self.l2_error = torch.zeros((self.nx * self.ny), dtype=self.db_t2s_s_unique.dtype)
+        self.estimates_r2p = torch.zeros((self.nx * self.ny), dtype=self.db_t2s_s_unique.dtype)
+        self.estimates_b1 = torch.zeros((self.nx * self.ny), dtype=self.db_b1s_unique.dtype)
+        self.b1_rmse = torch.zeros((self.nx * self.ny), dtype=self.db_b1s_unique.dtype)
         # need to reduce batch size due to memory constraints
-        self.batch_size: int = 20
-
-    def estimate_t2_b1_from_se(self) -> (torch.tensor, torch.tensor):
-        se_idx = self.delta_t_r2p_s < 1e-3
-        db = self.db_mag[:, se_idx]
-        db = torch.nan_to_num(
-            torch.divide(db, torch.linalg.norm(db, dim=-1, keepdim=True)),
-            posinf=0.0, nan=0.0
-        )
-        # need to batch data of whole slice
-        batch_idx = torch.split(torch.arange(self.signal.shape[0]), self.batch_size)
-        batch_data = torch.split(self.signal[:, se_idx], self.batch_size)
-        t2_estimate_init = torch.zeros((self.nx * self.ny), dtype=self.db_t2s_s.dtype)
-        b1_estimate_init = torch.zeros((self.nx * self.ny), dtype=self.db_b1s.dtype)
-        for idx_batch in tqdm.trange(len(batch_idx), desc="match dictionary from SE reads:: unregularized brute force"):
-            data_batch = batch_data[idx_batch]
-            data_batch = torch.nan_to_num(
-                torch.divide(data_batch, torch.linalg.norm(data_batch, dim=-1, keepdim=True)),
-                posinf=0.0, nan=0.0
-            )
-            data_idx = batch_idx[idx_batch]
-            # data dims [bs, t], db dims [t2-b1, t]
-            l2_t2_b1 = torch.linalg.norm(data_batch[None, :] - db[:, None], dim=-1)
-            fit_idx = torch.argmin(l2_t2_b1, dim=0).detach().cpu()
-            t2_estimate_init[data_idx] = self.db_t2s_s[fit_idx]
-            b1_estimate_init[data_idx] = self.db_b1s[fit_idx]
-        t2_estimate_init = torch.reshape(t2_estimate_init, (self.nx, self.ny))
-        b1_estimate_init = torch.reshape(b1_estimate_init, (self.nx, self.ny))
-        del data_batch, db, l2_t2_b1, se_idx, batch_data
-        torch.cuda.empty_cache()
-        return t2_estimate_init, b1_estimate_init
+        self.batch_size: int = 50
 
     def estimate_values(self):
         # need to batch data of whole slice
-        batch_idx = torch.split(torch.arange(self.signal.shape[0]), self.batch_size)
-        batch_data = torch.split(self.signal, self.batch_size)
-        for idx_batch in tqdm.trange(len(batch_idx), desc="match dictionary:: unregularized brute force"):
-            data_batch = batch_data[idx_batch]
-            data_batch = torch.nan_to_num(
-                torch.divide(data_batch, torch.linalg.norm(data_batch, dim=-1, keepdim=True)),
-                posinf=0.0, nan=0.0
-            )
-            data_idx = batch_idx[idx_batch]
-            # data dims [bs, t], db dims [t2-b1, t]
-            l2_t2_b1 = torch.linalg.norm(data_batch[None, :] - self.db_mag[:, None], dim=-1)
-            fit_idx = torch.argmin(l2_t2_b1, dim=0).detach().cpu()
-            self.estimates_t2[data_idx] = self.db_t2s_s[fit_idx]
-            self.estimates_r2p[data_idx] = self.db_r2ps[fit_idx]
-            self.estimates_b1[data_idx] = self.db_b1s[fit_idx]
+        num_batches = int(np.ceil(self.signal.shape[0] / self.batch_size))
+        for idx_batch in tqdm.trange(num_batches, desc="match dictionary"):
+            start_idx = idx_batch * self.batch_size
+            end_idx = np.min([(idx_batch + 1) * self.batch_size, self.signal.shape[0]])
+            # load curves
+            data_batch = self.signal[start_idx:end_idx]
+            # match b1 if provided
+            if self.b1w:
+                # b1 weighting, we have a dictionary per data point reduced to the closest b1 value
+                b1_cost = torch.square(self.b1[None, start_idx:end_idx] - self.db_b1s_unique[:, None])
+                b1_min = torch.min(b1_cost, dim=0)
+                self.b1_rmse[start_idx:end_idx] = torch.sqrt(b1_min.values)
+                b1_min = b1_min.indices
+
+                b1_db = self.db_mag_shaped[:, b1_min]
+                # match only SE data
+                # data dims [bs, t], db dims [t2, bs, t]
+                # l2
+                l2_t2_b1 = torch.linalg.norm(data_batch[None, :, self.se_select] - b1_db[:, :, self.se_select], dim=-1)
+                # get indices of minima along each dim
+                fit_min = torch.min(l2_t2_b1, dim=0)
+                self.l2_error[start_idx:end_idx] = fit_min.values
+                # dot
+                # dot_t2_b1 = torch.sum(data_batch[None, :, self.se_select] * b1_db[:, :, self.se_select], dim=-1)
+                # # get indices of maxima along each dim
+                # fit_max = torch.max(dot_t2_b1, dim=0)
+                # self.l2_error[start_idx:end_idx] = fit_max.values
+                # take b1 indices from above
+                fit_idx = fit_min.indices
+                fit_idx = torch.concatenate((fit_idx[:, None], b1_min[:, None]), dim=1)
+            else:
+                # data dims [bs, t], db dims [t2, b1, t]
+                l2_t2_b1 = torch.linalg.norm(
+                    data_batch[None, None, self.se_select] - self.db_mag_shaped[:, :, None, self.se_select],
+                    dim=-1
+                )
+                # self.l2_error = torch.min(l2_t2_b1, dim=(0, 1)).values
+                fit_idx = torch.squeeze(
+                    torch.stack(
+                        [(l2_t2_b1[:, i] == torch.min(l2_t2_b1[:, :, i])).nonzero() for i in range(l2_t2_b1.shape[-1])]
+                    )
+                ).detach().cpu()
+            self.estimates_b1[start_idx:end_idx] = self.db_b1s_unique[fit_idx[:, 1]]
+            self.estimates_t2[start_idx:end_idx] = self.db_t2s_s_unique[fit_idx[:, 0]]
+
+            # find r2p for non SE data
+            # set extracted db
+            db_t2_b1 = self.db_mag_shaped[fit_idx[:, 0], fit_idx[:, 1]][:, ~self.se_select]
+            # signal and db normalized to match se data points
+            signal = data_batch[:, ~self.se_select]
+            # minimize error
+            log_db_sig = torch.log(db_t2_b1) - torch.log(signal)
+            r2p = log_db_sig / self.delta_t_r2p_s[None, ~self.se_select]
+            self.estimates_r2p[start_idx:end_idx] = torch.mean(r2p, dim=-1)
 
     def get_maps(self):
-        t2 = 1e3 * torch.reshape(self.estimates_t2, (self.nx, self.ny))
+        t2_ms = 1e3 * torch.reshape(self.estimates_t2, (self.nx, self.ny))
         r2p = torch.reshape(self.estimates_r2p, (self.nx, self.ny))
         b1 = torch.reshape(self.estimates_b1, (self.nx, self.ny))
-        return t2.detach().cpu(), r2p.detach().cpu(), b1.detach().cpu(), self.t2_estimate_init, self.b1_estimate_init
+        err_l2 = torch.reshape(self.l2_error, (self.nx, self.ny))
+        rmse_b1 = torch.reshape(self.b1_rmse, (self.nx, self.ny))
+        return t2_ms.detach().cpu(), r2p.detach().cpu(), b1.detach().cpu(), err_l2.detach().cpu(), rmse_b1.detach().cpu()
 
 
 def plot_loss(losses: list, save_path: plib.Path, title: str):
@@ -575,6 +585,11 @@ def megesse_fit(
         fit_config: options.FitConfig, data_nii: torch.tensor, db_torch_mag: torch.tensor,
         db: DB, name: str, b1_nii=None):
     # data_nii = data_nii[:, :, 17:19, :]
+    if b1_nii is not None:
+        b1_scale = fit_config.b1_tx_scale
+        if torch.max(b1_nii) > 10:
+            b1_nii = b1_nii / 100
+        b1_nii *= b1_scale
     ep_path = plib.Path(fit_config.echo_props_path).absolute()
     if not ep_path.is_file():
         err = f"echo properties file: {ep_path} not found or not a file."
@@ -606,8 +621,10 @@ def megesse_fit(
     t2 = torch.zeros(shape)
     r2p = torch.zeros(shape)
     b1 = torch.zeros(shape)
-    t2_init = torch.zeros(shape)
-    b1_init = torch.zeros(shape)
+    err_l2 = torch.zeros(shape)
+    rmse_b1 = torch.zeros(shape)
+    # t2_init = torch.zeros(shape)
+    # b1_init = torch.zeros(shape)
     for idx_slice in range(data_nii.shape[2]):
         log_module.info(f"Process slice {idx_slice + 1} of {data_nii.shape[2]}")
         # # try autograd model
@@ -628,7 +645,7 @@ def megesse_fit(
         slice_optimize_model = BruteForce(
             db_torch_mag=db_torch_mag, db_t2s_s=t2_vals, db_b1s=b1_vals, slice_signal=data_nii[:, :, idx_slice],
             delta_t_r2p_ms=delta_t_ms_to_se, device=torch.device("cuda:0"),
-            r2p_range_Hz=(0.01, 100), r2p_sampling_size=200
+            r2p_range_Hz=(0.1, 60), r2p_sampling_size=250, slice_b1=b1_nii[:, :, idx_slice]
         )
         slice_optimize_model.estimate_values()
 
@@ -642,14 +659,12 @@ def megesse_fit(
         # slice_optimize_model.set_parameters(t2_t2p_b1=t2_t2p_b1)
 
         # get slice maps
-        (t2[:, :, idx_slice], r2p[:, :, idx_slice], b1[:, :, idx_slice], t2_init[:, :, idx_slice],
-         b1_init[:, :, idx_slice]) = slice_optimize_model.get_maps()
+        (t2[:, :, idx_slice], r2p[:, :, idx_slice], b1[:, :, idx_slice],
+         err_l2[:, :, idx_slice], rmse_b1[:, :, idx_slice]) = slice_optimize_model.get_maps()
         save_path = plib.Path(fit_config.save_path)
         # plot_loss(losses, save_path=save_path, title=f'losses_slice_{idx_slice + 1}')
-        plot_maps(t2, r2p, b1, t2_init, b1_init, save_path=save_path, title=f"maps_slice{idx_slice + 1}")
-
-    r2, pd = (None, None)
-    return t2.numpy(), r2p.numpy(), r2, b1.numpy(), pd
+        # plot_maps(t2, r2p, b1, t2_init, b1_init, save_path=save_path, title=f"maps_slice{idx_slice + 1}")
+    return t2.numpy(), r2p.numpy(), b1.numpy(), err_l2.numpy(), rmse_b1.numpy()
 
 
 def mese_fit(
@@ -705,6 +720,7 @@ def mese_fit(
         b1_scale = 1.0
 
     t2 = torch.zeros(num_flat_dim, dtype=t2_vals.dtype, device=device)
+    l2 = torch.zeros(num_flat_dim, dtype=t2_vals.dtype, device=device)
     b1 = torch.zeros(num_flat_dim, dtype=b1_vals.dtype, device=device)
     # get scaling of db curves as one factor to compute pd
     rho_theta = torch.zeros(num_flat_dim, dtype=rho_s.dtype, device=device)
@@ -728,23 +744,27 @@ def mese_fit(
 
         # find minimum index in db dim
         min_idx = torch.argmin(evaluation_matrix, dim=0)
+        # find minimum l2
+        min_l2 = torch.min(l2_norm_diff, dim=0).values
         # populate maps
         t2[nii_idxs[idx]] = t2_vals[min_idx]
         b1[nii_idxs[idx]] = b1_vals[min_idx]
+        l2[nii_idxs[idx]] = min_l2
         rho_theta[nii_idxs[idx]] = db_torch_norm[min_idx]
     # set t2 0 for signal 0 (eg. for bet) We could in principle use this to reduce computation demands
     # by not needing to compute those entries,
     # however we want to estimate the b1
     t2[nii_zero] = 0.0
+    l2[nii_zero] = 0.0
 
     # reshape
     if torch.max(t2) < 5:
         # cast to ms
         t2 = 1e3 * t2
     t2 = torch.reshape(t2, data_nii_input_shape[:-1])
-    r2 = torch.nan_to_num(1000.0 / t2, nan=0.0, posinf=0.0)
     t2 = t2.numpy(force=True)
-    r2 = r2.numpy(force=True)
+    l2 = torch.reshape(l2, data_nii_input_shape[:-1])
+    l2 = l2.numpy(force=True)
     b1 = torch.reshape(b1, data_nii_input_shape[:-1]).numpy(force=True)
     rho_theta[nii_zero] = 0.0
     rho_theta = torch.reshape(rho_theta, data_nii_input_shape[:-1]).cpu()
@@ -763,7 +783,7 @@ def mese_fit(
     pd_hist_perc = torch.cumsum(pd_hist, dim=0) / torch.sum(pd_hist, dim=0)
     pd_cutoff_value = pd_bins[torch.nonzero(pd_hist_perc > 0.95)[0].item()]
     pd = torch.clamp(pd, min=0.0, max=pd_cutoff_value).numpy(force=True)
-    return t2, r2, b1, pd
+    return t2, b1, pd, l2
 
 
 def main(fit_config: options.FitConfig):
@@ -794,29 +814,40 @@ def main(fit_config: options.FitConfig):
     if not fit_config.echo_props_path:
         warn = "no echo properties given, assuming SE type echo train."
         log_module.warning(warn)
-        t2, r2, b1, pd = mese_fit(
+        t2, b1, pd, err_l2 = mese_fit(
             fit_config=fit_config, data_nii=data_nii, name=name, db_torch_mag=torch.from_numpy(db_mag),
             db=db, device=device, b1_nii=b1_nii
         )
         r2p = None
+        rmse_b1 = None
     else:
-        t2, r2p, r2, b1, pd = megesse_fit(
+        t2, r2p, b1, err_l2, rmse_b1 = megesse_fit(
             fit_config=fit_config, data_nii=data_nii, db_torch_mag=torch.from_numpy(db_mag),
             db=db, name=name, b1_nii=b1_nii
         )
+        pd = None
+    # calculate r2
+    r2 = np.nan_to_num(1000.0 / t2, nan=0.0, posinf=0.0)
 
     # save
-    names = [f"t2", f"r2", f"b1", f"pd_like"]
-    data = [t2, r2, b1, pd]
+    names = [f"t2", f"r2", f"b1",]
+    data = [t2, r2, b1]
+    if pd is not None:
+        data.append(pd)
+        names.append("pd_like")
+    if err_l2 is not None:
+        data.append(err_l2)
+        names.append("err_l2")
+    if rmse_b1 is not None:
+        data.append(rmse_b1)
+        names.append("rmse_b1")
     if r2p is not None:
         data.append(r2p)
         names.append("r2p")
+        r2s = r2 + r2p
+        data.append(r2s)
+        names.append("r2s")
     for idx in range(len(data)):
-        if data[idx] is None:
-            if names[idx] == "r2":
-                data[idx] = np.divide(1e3, data[0], where=data[0] > 1e-5, out=np.zeros_like(data[0]))
-            else:
-                data[idx] = np.zeros_like(data[0])
         save_nii_data(data=data[idx], affine=data_affine, name_prefix=name, name=names[idx], path=path)
 
 
