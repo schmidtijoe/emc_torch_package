@@ -1,7 +1,6 @@
 name: emc_env
 channels:
   - conda-forge
-  - defaults
 dependencies:
   - python=3.10
   - pandas=2.0.3
@@ -14,3 +13,4 @@ dependencies:
   - simple-parsing
   - tqdm
   - nibabel
+  - wandb
